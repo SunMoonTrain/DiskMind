@@ -519,7 +519,8 @@ impl Tree {
             let e = removed_max.entry(r.parent).or_insert(0);
             *e = (*e).max(r.size);
         }
-        for &x in &self.order {
+        // The root's change is reported separately as total_delta.
+        for &x in self.order.iter().skip(1) {
             let xi = x as usize;
             if self.prev[xi] == UNKNOWN {
                 continue;
@@ -661,6 +662,7 @@ mod tests {
         // a1 was below the snapshot file threshold, so the growth is attributed to A.
         let g: Vec<_> = ch.grown.iter().map(|c| (c.name.as_str(), c.kind, c.delta / MB as i64)).collect();
         assert_eq!(g, [("A", "grown", 40)]);
+        assert!(ch.shrunk.iter().all(|c| c.id != cur.root as i64));
         let s: Vec<_> = ch.shrunk.iter().map(|c| (c.name.as_str(), c.kind, c.delta / MB as i64)).collect();
         assert!(s.contains(&("B", "removed", -20)), "{s:?}");
         assert!(s.contains(&("big.iso", "shrunk", -10)), "{s:?}");

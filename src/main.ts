@@ -464,7 +464,7 @@ async function renderTab() {
           .map(
             (f) => `<div class="crow" data-id="${f.id}" data-p="${f.parent}">
           <div class="l1"><span class="nm" title="${esc(f.name)}">${esc(f.name)}</span>${deltaBadge(f.size, f.prev)}<b>${fmtSize(f.size)}</b></div>
-          <div class="l2"><span class="p" title="${esc(f.path)}">${esc(f.path)}</span></div>
+          <div class="l2"><span class="p" title="${esc(f.path)}"><bdi>${esc(f.path)}</bdi></span></div>
           <div class="meter"><i style="width:${(f.size / max) * 100}%;background:linear-gradient(90deg,#4cc9f0,#9b5cff)"></i></div>
         </div>`,
           )
@@ -594,7 +594,7 @@ function changeRow(c: Change, maxAbs: number): string {
       <span class="nm" title="${esc(c.name)}">${esc(c.name)}</span>${badge}
       <b style="color:${color};font-variant-numeric:tabular-nums">${fmtDelta(c.delta)}</b>
     </div>
-    <div class="l2"><span class="p" title="${esc(c.path)}">${esc(c.path)}</span><span class="ft">${fmtSize(c.prev)} → ${fmtSize(c.size)}</span></div>
+    <div class="l2"><span class="p" title="${esc(c.path)}"><bdi>${esc(c.path)}</bdi></span><span class="ft">${fmtSize(c.prev)} → ${fmtSize(c.size)}</span></div>
     <div class="meter"><i style="width:${(Math.abs(c.delta) / maxAbs) * 100}%;background:${color};box-shadow:0 0 8px ${color}"></i></div>
   </div>`;
 }
