@@ -144,6 +144,7 @@ export class ChartHost {
   // ---------------------------------------------------------------- data
 
   setData(items: Item[], anim: { kind: 'in' | 'out'; rect?: Rect | null; childId?: number } | null = null) {
+    if (!anim) this.stopAnim();
     const old = this.root && anim ? this.snapshot() : null;
     this.build(items);
     this.layout();
@@ -157,14 +158,23 @@ export class ChartHost {
     }
   }
 
-  setMode(view: ViewMode, color: ColorMode) {
-    const old = this.root && view !== this.view ? this.snapshot() : null;
-    this.view = view;
+  setColor(color: ColorMode) {
     this.color = color;
     if (!this.root) return;
     this.computeRatios();
+    this.renderBase();
+    this.drawOverlay();
+  }
+
+  /** Switch view with the data fetched for the new view, so there is a single transition. */
+  switchView(view: ViewMode, items: Item[] | null) {
+    const old = this.root ? this.snapshot() : null;
+    this.view = view;
+    if (items) this.build(items);
+    if (!this.root) return;
     this.layout();
     this.renderBase();
+    this.hoverId = NaN;
     if (old) this.crossfade(old, this.snapshot());
     else this.drawOverlay();
   }
@@ -551,9 +561,19 @@ export class ChartHost {
     return s;
   }
 
+  private stopAnim() {
+    if (!this.anim) return;
+    cancelAnimationFrame(this.anim);
+    this.anim = 0;
+    this.base.style.opacity = '1';
+  }
+
   private run(D: number, frame: (e: number) => void) {
     cancelAnimationFrame(this.anim);
     const t0 = performance.now();
+    // Paint the first frame before hiding the base so no blank frame is shown in between.
+    this.octx.clearRect(0, 0, this.w, this.h);
+    frame(0);
     this.base.style.opacity = '0';
     const step = (now: number) => {
       const t = Math.min(1, (now - t0) / D);

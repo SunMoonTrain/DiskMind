@@ -689,20 +689,20 @@ function bindUi() {
       if (b.dataset.v === st.view) return;
       st.view = b.dataset.v as ViewMode;
       $('#viewSeg').querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b));
-      chart.setMode(st.view, st.color);
+      // Different views want different detail budgets: fetch first, then transition once.
+      let items = null;
       if (st.cur >= 0) {
-        // Different views want different detail budgets.
         const [budget, minFrac] = chartQuery();
-        const items = await api.getLayout(st.cur, budget, minFrac).catch(() => null);
-        if (items) chart.setData(items, null);
+        items = await api.getLayout(st.cur, budget, minFrac).catch(() => null);
       }
+      chart.switchView(st.view, items);
     };
   });
   $('#colorSeg').querySelectorAll<HTMLElement>('button').forEach((b) => {
     b.onclick = () => {
       st.color = b.dataset.c as ColorMode;
       $('#colorSeg').querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b));
-      chart.setMode(st.view, st.color);
+      chart.setColor(st.color);
       renderLegend();
     };
   });
