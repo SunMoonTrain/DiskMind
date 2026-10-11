@@ -77,8 +77,7 @@ export const mockApi = {
     { root: 'E:\\', label: '游戏', fs: 'NTFS', total: 953 * 1024 * MB, free: 40 * 1024 * MB, kind: 'fixed', lastScan: now - 86400000 * 12, lastTotal: 900 * 1024 * MB },
   ],
   isAdmin: async () => false,
-  relaunchAdmin: async () => {},
-  startScan: async (path: string) => {
+  startScan: async (path: string, _useMft: boolean) => {
     let t = 0;
     const iv = setInterval(() => {
       t += 80;

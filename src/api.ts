@@ -100,8 +100,7 @@ export interface ScanDone {
 const realApi = {
   listDrives: () => invoke<DriveInfo[]>('list_drives'),
   isAdmin: () => invoke<boolean>('is_admin'),
-  relaunchAdmin: () => invoke<void>('relaunch_admin'),
-  startScan: (path: string) => invoke<void>('start_scan', { path }),
+  startScan: (path: string, useMft: boolean) => invoke<void>('start_scan', { path, useMft }),
   cancelScan: () => invoke<void>('cancel_scan'),
   getLayout: (id: number, budget: number, minFrac: number) => invoke<Item[]>('get_layout', { id, budget, minFrac }),
   getChildren: (id: number, limit: number) => invoke<{ items: Item[]; total: number }>('get_children', { id, limit }),

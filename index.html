@@ -12,12 +12,9 @@
         <span data-tauri-drag-region>Disk<b>Mind</b></span>
       </div>
       <div class="tb-spacer" data-tauri-drag-region></div>
-      <button id="adminBtn" class="chip warn hidden" title="以管理员身份重启后可直接读取 NTFS 主文件表，速度提升 10 倍以上">
-        <svg viewBox="0 0 24 24"><path d="M13 2 4 14h7l-1 8 9-12h-7z" /></svg>启用 MFT 极速扫描
+      <button id="mftToggle" class="chip ok" title="">
+        <svg viewBox="0 0 24 24"><path d="M13 2 4 14h7l-1 8 9-12h-7z" /></svg><span id="mftLabel">MFT 极速：开</span>
       </button>
-      <span id="adminBadge" class="chip ok hidden">
-        <svg viewBox="0 0 24 24"><path d="M13 2 4 14h7l-1 8 9-12h-7z" /></svg>MFT 极速模式
-      </span>
       <div class="win-ctl">
         <button id="wMin" title="最小化"><svg viewBox="0 0 12 12"><path d="M2 6h8" /></svg></button>
         <button id="wMax" title="最大化"><svg viewBox="0 0 12 12"><rect x="2.5" y="2.5" width="7" height="7" /></svg></button>

@@ -2,7 +2,7 @@ use crate::history::{self, SnapMeta};
 use crate::progress::Counters;
 use crate::sys::{self, DriveInfo};
 use crate::tree::{BaselineInfo, Changes, ExtItem, FileItem, Item, NodeInfo, RawTree, Tree};
-use crate::{mft, walker};
+use crate::{elevate, mft, walker};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering::*};
@@ -110,14 +110,7 @@ pub fn is_admin() -> bool {
 }
 
 #[tauri::command]
-pub fn relaunch_admin(app: AppHandle) -> Res<()> {
-    sys::relaunch_admin()?;
-    app.exit(0);
-    Ok(())
-}
-
-#[tauri::command]
-pub fn start_scan(app: AppHandle, state: State<'_, AppState>, path: String) -> Res<()> {
+pub fn start_scan(app: AppHandle, state: State<'_, AppState>, path: String, use_mft: bool) -> Res<()> {
     let root = normalize(&path)?;
     if state.scanning.swap(true, SeqCst) {
         return Err("正在扫描中".into());
@@ -127,7 +120,7 @@ pub fn start_scan(app: AppHandle, state: State<'_, AppState>, path: String) -> R
     std::thread::Builder::new()
         .name("scan".into())
         .stack_size(16 << 20)
-        .spawn(move || run_scan(app2, root))
+        .spawn(move || run_scan(app2, root, use_mft))
         .map_err(|e| {
             state.scanning.store(false, SeqCst);
             e.to_string()
@@ -140,7 +133,7 @@ pub fn cancel_scan(state: State<'_, AppState>) {
     state.cancel.store(true, SeqCst);
 }
 
-fn run_scan(app: AppHandle, root: String) {
+fn run_scan(app: AppHandle, root: String, use_mft: bool) {
     let state = app.state::<AppState>();
     let c = Arc::new(Counters::default());
     let t0 = Instant::now();
@@ -167,13 +160,13 @@ fn run_scan(app: AppHandle, root: String) {
             }
         });
     }
-    let done = scan_inner(&app, &state, &root, &c, t0);
+    let done = scan_inner(&app, &state, &root, use_mft, &c, t0);
     stop.store(true, Relaxed);
     state.scanning.store(false, SeqCst);
     let _ = app.emit("scan-done", done);
 }
 
-fn scan_inner(app: &AppHandle, state: &State<'_, AppState>, root: &str, c: &Counters, t0: Instant) -> ScanDone {
+fn scan_inner(app: &AppHandle, state: &State<'_, AppState>, root: &str, use_mft: bool, c: &Counters, t0: Instant) -> ScanDone {
     let cancel = &*state.cancel;
     let mut warning = None;
     let mut raw: Option<RawTree> = None;
@@ -192,16 +185,28 @@ fn scan_inner(app: &AppHandle, state: &State<'_, AppState>, root: &str, c: &Coun
         baseline: None,
     };
 
-    if is_drive_root(root) && sys::is_admin() && sys::fs_name(root).eq_ignore_ascii_case("NTFS") {
+    if use_mft && is_drive_root(root) && sys::fs_name(root).eq_ignore_ascii_case("NTFS") {
         c.set_mode("MFT");
-        c.set_phase("读取 MFT");
-        match mft::scan(root.chars().next().unwrap(), c, cancel) {
+        let letter = root.chars().next().unwrap();
+        // The UI stays non-elevated; only a short-lived helper process gets admin rights.
+        let r = if sys::is_admin() {
+            c.set_phase("读取 MFT");
+            mft::scan(letter, c, cancel)
+        } else {
+            c.set_phase("等待管理员授权");
+            elevate::run_elevated(letter, c, cancel)
+        };
+        match r {
             Ok(r) => {
                 raw = Some(r);
                 mode = "MFT";
             }
             Err(e) if !cancel.load(Relaxed) => {
-                warning = Some(format!("MFT 读取失败，已回退为目录遍历：{e}"));
+                warning = Some(if e == elevate::DENIED {
+                    "未获得管理员授权，已改用目录遍历".to_string()
+                } else {
+                    format!("MFT 读取失败，已回退为目录遍历：{e}")
+                });
                 c.reset();
             }
             Err(_) => {}

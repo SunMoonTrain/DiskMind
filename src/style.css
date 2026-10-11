@@ -98,6 +98,9 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .chip.warn:hover { background: rgba(255, 179, 71, 0.16); }
 .chip.ok { color: var(--down); border-color: rgba(61, 220, 151, 0.35); background: rgba(61, 220, 151, 0.08); }
 .chip.ok svg { fill: currentColor; stroke: none; }
+.chip.ok:hover { background: rgba(61, 220, 151, 0.16); }
+.chip.off { color: var(--dim); border-color: var(--line2); }
+.chip.off:hover { color: var(--text); background: rgba(255, 255, 255, 0.05); }
 
 /* ------------------------------------------------------------------ buttons */
 .btn {

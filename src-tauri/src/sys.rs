@@ -2,11 +2,10 @@
 
 use serde::Serialize;
 use std::os::windows::process::CommandExt;
-use std::ptr::{null, null_mut};
 use windows_sys::Win32::Storage::FileSystem::{
     GetDiskFreeSpaceExW, GetDriveTypeW, GetLogicalDrives, GetVolumeInformationW,
 };
-use windows_sys::Win32::UI::Shell::{IsUserAnAdmin, ShellExecuteW};
+use windows_sys::Win32::UI::Shell::IsUserAnAdmin;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -84,18 +83,6 @@ pub fn fs_name(root: &str) -> String {
 
 pub fn is_admin() -> bool {
     unsafe { IsUserAnAdmin() != 0 }
-}
-
-pub fn relaunch_admin() -> Result<(), String> {
-    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    let op = wide("runas");
-    let file = wide(&exe.to_string_lossy());
-    let r = unsafe { ShellExecuteW(null_mut(), op.as_ptr(), file.as_ptr(), null(), null(), 1) };
-    if r as isize > 32 {
-        Ok(())
-    } else {
-        Err("已取消或启动失败".into())
-    }
 }
 
 pub fn reveal(path: &str, select: bool) -> Result<(), String> {

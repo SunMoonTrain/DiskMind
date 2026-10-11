@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod commands;
+mod elevate;
 mod history;
 mod mft;
 mod progress;
@@ -11,6 +12,9 @@ mod walker;
 fn main() {
     // `diskmind --bench <path>`: headless scan timing, for profiling the scanners.
     let args: Vec<String> = std::env::args().collect();
+    if args.len() >= 4 && args[1] == elevate::FLAG {
+        std::process::exit(elevate::helper_main(&args[2], &args[3]));
+    }
     if args.len() >= 3 && args[1] == "--bench" {
         bench(&args[2]);
         return;
@@ -22,7 +26,6 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             commands::list_drives,
             commands::is_admin,
-            commands::relaunch_admin,
             commands::start_scan,
             commands::cancel_scan,
             commands::get_layout,

@@ -21,6 +21,7 @@ type Tab = 'changes' | 'files' | 'types' | 'history';
 
 const st = {
   admin: false,
+  mft: loadMftPref(),
   rootId: -1,
   rootPath: '',
   mode: '',
@@ -138,6 +139,27 @@ document.addEventListener('mousedown', (e) => {
   if (!(e.target as HTMLElement).closest('#ctxMenu')) closeMenu();
 });
 
+// ------------------------------------------------------------------ MFT toggle
+
+function loadMftPref(): boolean {
+  try {
+    return localStorage.getItem('mft') !== '0';
+  } catch {
+    return true;
+  }
+}
+
+function renderMftToggle() {
+  const b = $('#mftToggle');
+  b.className = `chip ${st.mft ? 'ok' : 'off'}`;
+  $('#mftLabel').textContent = `MFT 极速：${st.mft ? '开' : '关'}`;
+  b.title = st.mft
+    ? st.admin
+      ? '扫描整个 NTFS 磁盘时直接读取主文件表（当前已是管理员，无需授权）。点击关闭'
+      : '扫描整个 NTFS 磁盘时直接读取主文件表，速度快 10 倍以上。\n每次扫描会弹出一次管理员授权，只授权给扫描子进程；界面本身不以管理员运行，不影响其他软件的全局快捷键。\n点击关闭'
+    : '已关闭：使用普通目录遍历，不会弹出管理员授权。点击开启';
+}
+
 // ------------------------------------------------------------------ welcome
 
 async function loadWelcome() {
@@ -164,7 +186,7 @@ async function loadWelcome() {
           </div>
         </div>
         <div class="usage"><span>已用 <b>${fmtSize(used)}</b></span><span>共 ${fmtSize(d.total)}</span></div>
-        <div class="usage" style="margin-top:4px"><span>可用 ${fmtSize(d.free)}</span><span>${d.fs === 'NTFS' && st.admin ? 'MFT 极速' : ''}</span></div>
+        <div class="usage" style="margin-top:4px"><span>可用 ${fmtSize(d.free)}</span><span>${d.fs === 'NTFS' && st.mft ? '⚡ MFT 极速' : ''}</span></div>
         <div class="last">${last}<span class="go">扫描 →</span></div>
       </div>`;
     })
@@ -191,7 +213,7 @@ async function startScan(path: string) {
   try {
     resetOverlay(path);
     $('#scanOverlay').classList.remove('hidden');
-    await api.startScan(path);
+    await api.startScan(path, st.mft);
   } catch (e) {
     $('#scanOverlay').classList.add('hidden');
     toast(String(e), true);
@@ -664,7 +686,14 @@ function bindUi() {
     })
     .catch(() => {});
 
-  $('#adminBtn').onclick = () => api.relaunchAdmin().catch((e) => toast(String(e), true));
+  $('#mftToggle').onclick = () => {
+    st.mft = !st.mft;
+    try {
+      localStorage.setItem('mft', st.mft ? '1' : '0');
+    } catch {}
+    renderMftToggle();
+    if (!$('#welcome').classList.contains('hidden')) loadWelcome();
+  };
   $('#pickFolder').onclick = async () => {
     try {
       const { open } = await import('@tauri-apps/plugin-dialog');
@@ -743,8 +772,7 @@ async function init() {
     renderLegend();
   });
   st.admin = await api.isAdmin().catch(() => false);
-  $('#adminBtn').classList.toggle('hidden', st.admin);
-  $('#adminBadge').classList.toggle('hidden', !st.admin);
+  renderMftToggle();
   await loadWelcome();
 }
 

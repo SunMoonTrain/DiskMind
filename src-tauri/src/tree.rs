@@ -1,5 +1,5 @@
 use crate::history::{SnapMeta, Snapshot};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap};
 
@@ -14,6 +14,7 @@ const CHANGE_MIN: i64 = 1 << 20;
 
 /// Scanner output: a flat parent-pointer forest. Entries with an empty name or
 /// NONE parent are ignored (unused MFT records, etc.). `size` is the node's own size.
+#[derive(Serialize, Deserialize)]
 pub struct RawTree {
     pub names: Vec<Box<str>>,
     pub parent: Vec<u32>,
