@@ -12,6 +12,9 @@ use std::io::{BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 
 const KEEP: usize = 30;
+/// Snapshot format version. MFT snapshots below 2 over-counted sparse metadata streams
+/// ($BadClus:$Bad, $UsnJrnl:$J) by up to the whole volume size and are discarded.
+pub const VER: u32 = 2;
 
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -26,6 +29,14 @@ pub struct SnapMeta {
     pub mode: String,
     #[serde(default)]
     pub elapsed_ms: u64,
+    #[serde(default)]
+    pub ver: u32,
+}
+
+impl SnapMeta {
+    fn valid(&self) -> bool {
+        !(self.mode == "MFT" && self.ver < 2)
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -57,11 +68,17 @@ fn dir_for(base: &Path, root: &str) -> PathBuf {
     base.join("history").join(format!("{:016x}", fnv(&root.to_lowercase())))
 }
 
-pub fn list(base: &Path, root: &str) -> Vec<SnapMeta> {
+fn read_index(base: &Path, root: &str) -> Vec<SnapMeta> {
     let p = dir_for(base, root).join("index.json");
     let mut v: Vec<SnapMeta> =
         fs::read(p).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
     v.sort_by(|a, b| b.time.cmp(&a.time));
+    v
+}
+
+pub fn list(base: &Path, root: &str) -> Vec<SnapMeta> {
+    let mut v = read_index(base, root);
+    v.retain(SnapMeta::valid);
     v
 }
 
@@ -85,7 +102,14 @@ pub fn save(base: &Path, root: &str, snap: &Snapshot, mut meta: SnapMeta) -> Res
     bincode::serialize_into(&mut enc, snap).map_err(|e| e2s(&e))?;
     enc.finish().and_then(|mut w| w.flush()).map_err(|e| e2s(&e))?;
 
-    let mut all = list(base, root);
+    let mut all = read_index(base, root);
+    all.retain(|m| {
+        let keep = m.valid();
+        if !keep {
+            let _ = fs::remove_file(dir.join(&m.file));
+        }
+        keep
+    });
     all.retain(|m| m.file != file);
     all.insert(0, meta.clone());
     while all.len() > KEEP {

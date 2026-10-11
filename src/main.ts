@@ -543,6 +543,7 @@ function renderChanges(body: HTMLElement) {
       <div class="lbl"><span>对比基线（${fmtAgo(ch.baseline.time)}）</span></div>
       <select id="baseSel">${options}</select>
       <div class="tot"><b class="${td > 0 ? 'up' : td < 0 ? 'down' : ''}">${fmtDelta(td)}</b><span>${fmtSize(ch.baseline.total)} → ${fmtSize(st.lastDone?.total ?? 0)}</span></div>
+      ${modeNote(ch.baseline.mode)}
     </div>
     <div class="subtabs">
       <button data-s="grown" class="g ${st.changeSide === 'grown' ? 'on' : ''}">▲ 变大 ${ch.grown.length}</button>
@@ -569,6 +570,13 @@ function renderChanges(body: HTMLElement) {
     }
   };
   bindRevealRows(body);
+}
+
+function modeNote(baseMode: string): string {
+  const cur = st.lastDone?.mode;
+  if (!baseMode || !cur || baseMode === cur) return '';
+  const name = (m: string) => (m === 'MFT' ? 'MFT 直读' : '目录遍历');
+  return `<div class="mode-note">基线用的是${name(baseMode)}，本次是${name(cur)}。目录遍历读不到 System Volume Information 等系统目录，这部分会显示为新增或删除。</div>`;
 }
 
 function changeRow(c: Change, maxAbs: number): string {

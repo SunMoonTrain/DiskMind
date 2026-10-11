@@ -15,6 +15,8 @@ use std::sync::mpsc::sync_channel;
 const CHUNK: u64 = 8 << 20;
 const ROOT_RECORD: u32 = 5;
 const SPARSE: u64 = u64::MAX;
+const ATTR_COMPRESSED: u16 = 0x0001;
+const ATTR_SPARSE: u16 = 0x8000;
 
 #[inline]
 fn u16le(b: &[u8], o: usize) -> u16 {
@@ -153,14 +155,26 @@ fn parse_record(rec: &mut [u8], idx: u32) -> Option<Parsed> {
                     }
                 }
             }
-            // $DATA: count every stream. Named streams (e.g. $UsnJrnl:$J) are often
-            // sparse, so use their allocated size.
+            // $DATA: count every stream. Unnamed streams use the logical size (like Explorer
+            // and the directory walker). Named streams are mostly metadata that is sparse,
+            // e.g. $BadClus:$Bad (logical size == whole volume) and $UsnJrnl:$J, so use the
+            // clusters actually on disk. For sparse/compressed attributes the "allocated size"
+            // field still includes holes; the real figure is the compressed size at 0x40.
             0x80 => {
                 if nonres {
                     if len >= 0x40 && u64le(rec, off + 0x10) == 0 {
-                        let alloc = u64le(rec, off + 0x28);
                         let real = u64le(rec, off + 0x30);
-                        size += if attr_name_len == 0 { real } else { alloc.min(real) };
+                        size += if attr_name_len == 0 {
+                            real
+                        } else {
+                            let flags = u16le(rec, off + 0x0C);
+                            let on_disk = if flags & (ATTR_COMPRESSED | ATTR_SPARSE) != 0 {
+                                if len >= 0x48 { u64le(rec, off + 0x40) } else { 0 }
+                            } else {
+                                u64le(rec, off + 0x28)
+                            };
+                            on_disk.min(real)
+                        };
                     }
                 } else if len >= 0x18 {
                     size += u32le(rec, off + 0x10) as u64;
@@ -318,4 +332,82 @@ fn mft_runs(rec: &[u8]) -> Option<(Vec<(u64, u64)>, u64)> {
         off += len;
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const GB: u64 = 1 << 30;
+
+    /// Non-resident $DATA attribute header (no real data runs needed for size parsing).
+    fn data_attr(name: &str, flags: u16, alloc: u64, real: u64, on_disk: u64) -> Vec<u8> {
+        let name16: Vec<u16> = name.encode_utf16().collect();
+        let runs = 0x48 + name16.len() * 2;
+        let len = (runs + 1 + 7) & !7;
+        let mut a = vec![0u8; len];
+        a[0..4].copy_from_slice(&0x80u32.to_le_bytes());
+        a[4..8].copy_from_slice(&(len as u32).to_le_bytes());
+        a[8] = 1;
+        a[9] = name16.len() as u8;
+        a[0x0A..0x0C].copy_from_slice(&0x48u16.to_le_bytes());
+        a[0x0C..0x0E].copy_from_slice(&flags.to_le_bytes());
+        a[0x20..0x22].copy_from_slice(&(runs as u16).to_le_bytes());
+        a[0x28..0x30].copy_from_slice(&alloc.to_le_bytes());
+        a[0x30..0x38].copy_from_slice(&real.to_le_bytes());
+        a[0x38..0x40].copy_from_slice(&real.to_le_bytes());
+        a[0x40..0x48].copy_from_slice(&on_disk.to_le_bytes());
+        for (i, c) in name16.iter().enumerate() {
+            a[0x48 + i * 2..0x4A + i * 2].copy_from_slice(&c.to_le_bytes());
+        }
+        a
+    }
+
+    /// 1 KB FILE record (in use) holding the given attributes, with a valid fixup array.
+    fn record(attrs: &[Vec<u8>]) -> Vec<u8> {
+        let mut r = vec![0u8; 1024];
+        r[0..4].copy_from_slice(b"FILE");
+        r[4..6].copy_from_slice(&0x30u16.to_le_bytes());
+        r[6..8].copy_from_slice(&3u16.to_le_bytes());
+        r[0x14..0x16].copy_from_slice(&0x38u16.to_le_bytes());
+        r[0x16..0x18].copy_from_slice(&1u16.to_le_bytes());
+        let mut off = 0x38;
+        for a in attrs {
+            r[off..off + a.len()].copy_from_slice(a);
+            off += a.len();
+        }
+        r[off..off + 4].copy_from_slice(&u32::MAX.to_le_bytes());
+        r[0x30] = 7; // update sequence number, stamped at the end of each sector
+        r[510] = 7;
+        r[1022] = 7;
+        r
+    }
+
+    fn size_of(attrs: &[Vec<u8>]) -> u64 {
+        parse_record(&mut record(attrs), 0).unwrap().size
+    }
+
+    #[test]
+    fn badclus_bad_stream_counts_as_zero() {
+        // $BadClus:$Bad — sparse, logical size == volume size, nothing on disk.
+        assert_eq!(size_of(&[data_attr("$Bad", ATTR_SPARSE, 198 * GB, 198 * GB, 0)]), 0);
+    }
+
+    #[test]
+    fn sparse_named_stream_uses_on_disk_size() {
+        // $UsnJrnl:$J — 40 GB logical, 32 MB actually allocated.
+        assert_eq!(size_of(&[data_attr("$J", ATTR_SPARSE, 40 * GB, 40 * GB, 32 << 20)]), 32 << 20);
+    }
+
+    #[test]
+    fn unnamed_stream_uses_logical_size() {
+        assert_eq!(size_of(&[data_attr("", 0, 8192, 5000, 0)]), 5000);
+        assert_eq!(size_of(&[data_attr("", ATTR_SPARSE, 10 * GB, 10 * GB, GB)]), 10 * GB);
+    }
+
+    #[test]
+    fn plain_named_stream_uses_allocated_size() {
+        assert_eq!(size_of(&[data_attr("Zone.Identifier", 0, 4096, 26, 0)]), 26);
+        assert_eq!(size_of(&[data_attr("", 0, 4096, 1000, 0), data_attr("ads", 0, 8192, 8000, 0)]), 9000);
+    }
 }

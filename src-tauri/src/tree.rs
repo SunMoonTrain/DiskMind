@@ -29,6 +29,7 @@ pub struct BaselineInfo {
     pub file: String,
     pub time: i64,
     pub total: u64,
+    pub mode: String,
 }
 
 pub struct Removed {
@@ -502,7 +503,7 @@ impl Tree {
                 });
             }
         }
-        self.baseline = Some(BaselineInfo { file: meta.file.clone(), time: meta.time, total: sn[0].size });
+        self.baseline = Some(BaselineInfo { file: meta.file.clone(), time: meta.time, total: sn[0].size, mode: meta.mode.clone() });
     }
 
     /// Most specific grown / shrunk entries: a directory is skipped when one child
@@ -650,7 +651,7 @@ mod tests {
     fn baseline_diff() {
         let old = sample(10, true, 30);
         let snap = history::build(&old, 1);
-        let meta = history::SnapMeta { file: "1.dmsnap".into(), time: 1, total: 0, files: 0, dirs: 0, mode: String::new(), elapsed_ms: 0 };
+        let meta = history::SnapMeta { file: "1.dmsnap".into(), time: 1, total: 0, files: 0, dirs: 0, mode: String::new(), elapsed_ms: 0, ver: history::VER };
 
         // A grows by 40 MB (inside a1), B is deleted, iso shrinks to 20 MB.
         let mut cur = sample(50, false, 20);

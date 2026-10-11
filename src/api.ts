@@ -38,7 +38,7 @@ export interface NodeInfo {
   crumbs: Crumb[];
 }
 
-export interface Baseline { file: string; time: number; total: number }
+export interface Baseline { file: string; time: number; total: number; mode: string }
 
 export interface Change {
   id: number;

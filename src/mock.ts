@@ -85,7 +85,7 @@ export const mockApi = {
       emit('scan-progress', p);
       if (t >= 1600) {
         clearInterval(iv);
-        const d: ScanDone = { ok: true, error: null, warning: null, root: 0, rootPath: 'C:\\', mode: 'MFT', elapsedMs: 1642, files: nodes[0].files, dirs: nodes.filter((n) => n.dir).length, total: nodes[0].size, baseline: { file: history[1].file, time: history[1].time, total: nodes[0].prev! } };
+        const d: ScanDone = { ok: true, error: null, warning: null, root: 0, rootPath: 'C:\\', mode: 'MFT', elapsedMs: 1642, files: nodes[0].files, dirs: nodes.filter((n) => n.dir).length, total: nodes[0].size, baseline: { file: history[1].file, time: history[1].time, total: nodes[0].prev!, mode: 'MFT' } };
         emit('scan-done', d);
       }
     }, 80);
@@ -125,7 +125,7 @@ export const mockApi = {
       .map((n) => ({ id: n.id, parent: n.parent, name: n.name, path: pathOf(n.id), size: n.size, prev: n.prev!, delta: n.size - n.prev!, dir: n.dir, kind: n.prev === 0 ? 'new' : n.size > n.prev! ? 'grown' : 'shrunk' }));
     const shrunk = all.filter((c) => c.delta < 0).sort((a, b) => a.delta - b.delta).slice(0, 40);
     shrunk.splice(2, 0, { id: -1, parent: 0, name: 'OldBackups', path: 'C:\\Users\\me\\OldBackups', size: 0, prev: 2400 * MB, delta: -2400 * MB, dir: true, kind: 'removed' });
-    return { baseline: { file: history[1].file, time: history[1].time, total: nodes[0].prev! }, totalDelta: nodes[0].size - nodes[0].prev!, grown: all.filter((c) => c.delta > 0).sort((a, b) => b.delta - a.delta).slice(0, 40), shrunk };
+    return { baseline: { file: history[1].file, time: history[1].time, total: nodes[0].prev!, mode: '遍历' }, totalDelta: nodes[0].size - nodes[0].prev!, grown: all.filter((c) => c.delta > 0).sort((a, b) => b.delta - a.delta).slice(0, 40), shrunk };
   },
   getTopFiles: async (id: number, limit: number): Promise<FileItem[]> => {
     const fs: N[] = [];

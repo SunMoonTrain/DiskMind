@@ -235,7 +235,9 @@ fn scan_inner(app: &AppHandle, state: &State<'_, AppState>, root: &str, use_mft:
 
     c.set_phase("对比历史");
     if let Some(base) = data_dir(app) {
-        if let Some(m) = history::list(&base, root).first() {
+        // Prefer the latest snapshot taken the same way: MFT sees system folders the walker can't.
+        let metas = history::list(&base, root);
+        if let Some(m) = metas.iter().find(|m| m.mode == mode).or(metas.first()) {
             if let Some(s) = history::load(&base, root, &m.file) {
                 tree.apply_baseline(Some((&s, m)));
             }
@@ -250,6 +252,7 @@ fn scan_inner(app: &AppHandle, state: &State<'_, AppState>, root: &str, use_mft:
             dirs: tree.dir_count,
             mode: mode.into(),
             elapsed_ms,
+            ver: history::VER,
         };
         if let Err(e) = history::save(&base, root, &snap, meta) {
             warning = Some(format!("保存扫描快照失败：{e}"));
