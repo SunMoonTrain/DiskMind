@@ -35,7 +35,8 @@ export interface ChartEvents {
 type HSL = [number, number, number];
 const TOP_HUES = [192, 266, 328, 158, 34, 214, 292, 96, 8, 178, 244, 52];
 const TAU = Math.PI * 2;
-const FONT = '"Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", sans-serif';
+// system-ui follows the user's Windows UI font (the message font), whatever it is set to.
+const FONT = 'system-ui, "Segoe UI", "Microsoft YaHei UI", sans-serif';
 
 const hsl = (c: HSL, a = 1) => `hsla(${c[0]},${c[1]}%,${c[2]}%,${a})`;
 
@@ -175,7 +176,7 @@ export class ChartHost {
     this.layout();
     this.renderBase();
     this.hoverId = NaN;
-    if (old) this.crossfade(old, this.snapshot());
+    if (old) this.crossfade(old);
     else this.drawOverlay();
   }
 
@@ -568,13 +569,13 @@ export class ChartHost {
     this.base.style.opacity = '1';
   }
 
-  private run(D: number, frame: (e: number) => void) {
+  private run(D: number, frame: (e: number) => void, hideBase = true) {
     cancelAnimationFrame(this.anim);
     const t0 = performance.now();
     // Paint the first frame before hiding the base so no blank frame is shown in between.
     this.octx.clearRect(0, 0, this.w, this.h);
     frame(0);
-    this.base.style.opacity = '0';
+    if (hideBase) this.base.style.opacity = '0';
     const step = (now: number) => {
       const t = Math.min(1, (now - t0) / D);
       const e = 1 - Math.pow(1 - t, 3);
@@ -613,16 +614,26 @@ export class ChartHost {
     c.globalAlpha = 1;
   }
 
-  private crossfade(oldImg: HTMLCanvasElement, newImg: HTMLCanvasElement) {
-    this.run(300, (e) => {
-      const c = this.octx;
-      const s = 0.94 + 0.06 * e;
-      c.globalAlpha = 1 - e;
-      c.drawImage(oldImg, 0, 0, oldImg.width, oldImg.height, 0, 0, this.w, this.h);
-      c.globalAlpha = e;
-      c.drawImage(newImg, 0, 0, newImg.width, newImg.height, (this.w * (1 - s)) / 2, (this.h * (1 - s)) / 2, this.w * s, this.h * s);
-      c.globalAlpha = 1;
-    });
+  /**
+   * The new view is already on the (visible) base canvas; only the old frame fades out
+   * on top. No snapshot of the freshly drawn view is needed, so a slow GPU rasterization
+   * of a heavy treemap can't surface as blank or stale frames.
+   */
+  private crossfade(oldImg: HTMLCanvasElement) {
+    const bg = getComputedStyle(this.wrap).backgroundColor;
+    this.run(
+      260,
+      (e) => {
+        const c = this.octx;
+        const s = 1 + 0.04 * e;
+        c.globalAlpha = 1 - e;
+        c.fillStyle = bg;
+        c.fillRect(0, 0, this.w, this.h);
+        c.drawImage(oldImg, 0, 0, oldImg.width, oldImg.height, (this.w * (1 - s)) / 2, (this.h * (1 - s)) / 2, this.w * s, this.h * s);
+        c.globalAlpha = 1;
+      },
+      false,
+    );
   }
 }
 

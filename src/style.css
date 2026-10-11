@@ -15,7 +15,8 @@
   --new: #e070ff;
   --warn: #ffb347;
   --radius: 12px;
-  --font: 'Segoe UI Variable Text', 'Segoe UI', 'Microsoft YaHei UI', system-ui, sans-serif;
+  /* system-ui = the user's Windows UI font */
+  --font: system-ui, 'Segoe UI', 'Microsoft YaHei UI', sans-serif;
   --mono: 'Cascadia Mono', 'JetBrains Mono', Consolas, monospace;
   color-scheme: dark;
 }
@@ -219,7 +220,7 @@ button { font: inherit; color: inherit; cursor: pointer; }
 
 /* chart */
 .chart-panel { position: relative; padding: 6px; }
-.chart-wrap { position: relative; flex: 1; min-height: 0; border-radius: 8px; overflow: hidden; }
+.chart-wrap { position: relative; flex: 1; min-height: 0; border-radius: 8px; overflow: hidden; background: #0a0e16; }
 .chart-wrap canvas { position: absolute; inset: 0; }
 .legend {
   position: absolute; right: 16px; bottom: 16px; padding: 8px 12px; border-radius: 10px;
