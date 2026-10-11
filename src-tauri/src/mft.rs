@@ -15,8 +15,6 @@ use std::sync::mpsc::sync_channel;
 const CHUNK: u64 = 8 << 20;
 const ROOT_RECORD: u32 = 5;
 const SPARSE: u64 = u64::MAX;
-const ATTR_COMPRESSED: u16 = 0x0001;
-const ATTR_SPARSE: u16 = 0x8000;
 
 #[inline]
 fn u16le(b: &[u8], o: usize) -> u16 {
@@ -108,6 +106,33 @@ fn decode_runs(b: &[u8]) -> Vec<(u64, u64)> {
     v
 }
 
+/// Total length of the non-sparse runs in a mapping-pairs array, in clusters.
+fn mapped_clusters(b: &[u8]) -> u64 {
+    let mut p = 0;
+    let mut total = 0u64;
+    while p < b.len() {
+        let h = b[p];
+        if h == 0 {
+            break;
+        }
+        p += 1;
+        let ls = (h & 0xF) as usize;
+        let os = (h >> 4) as usize;
+        if ls > 8 || os > 8 || p + ls + os > b.len() {
+            break;
+        }
+        let mut len = 0u64;
+        for i in 0..ls {
+            len |= (b[p + i] as u64) << (8 * i);
+        }
+        if os != 0 {
+            total += len;
+        }
+        p += ls + os;
+    }
+    total
+}
+
 struct Parsed {
     idx: u32,
     base: u32,
@@ -117,7 +142,7 @@ struct Parsed {
     size: u64,
 }
 
-fn parse_record(rec: &mut [u8], idx: u32) -> Option<Parsed> {
+fn parse_record(rec: &mut [u8], idx: u32, cluster: u64) -> Option<Parsed> {
     if !fixup(rec) {
         return None;
     }
@@ -156,25 +181,24 @@ fn parse_record(rec: &mut [u8], idx: u32) -> Option<Parsed> {
                 }
             }
             // $DATA: count every stream. Unnamed streams use the logical size (like Explorer
-            // and the directory walker). Named streams are mostly metadata that is sparse,
-            // e.g. $BadClus:$Bad (logical size == whole volume) and $UsnJrnl:$J, so use the
-            // clusters actually on disk. For sparse/compressed attributes the "allocated size"
-            // field still includes holes; the real figure is the compressed size at 0x40.
+            // and the directory walker). Named streams are mostly NTFS metadata that is
+            // largely sparse — $BadClus:$Bad's logical *and* allocated size equal the whole
+            // volume while it occupies nothing, and its sparse flag isn't reliably set — so
+            // count the clusters its data runs actually map. Every segment carries its own
+            // runs, so extension segments (start VCN > 0) are summed too.
             0x80 => {
                 if nonres {
-                    if len >= 0x40 && u64le(rec, off + 0x10) == 0 {
-                        let real = u64le(rec, off + 0x30);
-                        size += if attr_name_len == 0 {
-                            real
+                    if len >= 0x40 {
+                        if attr_name_len == 0 {
+                            if u64le(rec, off + 0x10) == 0 {
+                                size += u64le(rec, off + 0x30);
+                            }
                         } else {
-                            let flags = u16le(rec, off + 0x0C);
-                            let on_disk = if flags & (ATTR_COMPRESSED | ATTR_SPARSE) != 0 {
-                                if len >= 0x48 { u64le(rec, off + 0x40) } else { 0 }
-                            } else {
-                                u64le(rec, off + 0x28)
-                            };
-                            on_disk.min(real)
-                        };
+                            let ro = off + u16le(rec, off + 0x20) as usize;
+                            if ro < end {
+                                size += mapped_clusters(&rec[ro..end]) * cluster;
+                            }
+                        }
                     }
                 } else if len >= 0x18 {
                     size += u32le(rec, off + 0x10) as u64;
@@ -264,7 +288,7 @@ pub fn scan(letter: char, c: &Counters, cancel: &AtomicBool) -> Result<RawTree, 
             let parsed: Vec<Parsed> = data[..nrec * rs]
                 .par_chunks_mut(rs)
                 .enumerate()
-                .filter_map(|(i, r)| parse_record(r, (base_idx + i) as u32))
+                .filter_map(|(i, r)| parse_record(r, (base_idx + i) as u32, cluster))
                 .collect();
             let (mut nf, mut nd, mut nb) = (0u64, 0u64, 0u64);
             for p in parsed {
@@ -339,12 +363,29 @@ mod tests {
     use super::*;
 
     const GB: u64 = 1 << 30;
+    const CLUSTER: u64 = 4096;
 
-    /// Non-resident $DATA attribute header (no real data runs needed for size parsing).
-    fn data_attr(name: &str, flags: u16, alloc: u64, real: u64, on_disk: u64) -> Vec<u8> {
+    /// Mapping-pairs array from (length in clusters, Some(lcn delta) | None for sparse).
+    fn runs(list: &[(u64, Option<i64>)]) -> Vec<u8> {
+        let mut v = Vec::new();
+        for &(len, off) in list {
+            let lb = len.to_le_bytes();
+            let ls = 8 - lb.iter().rev().take_while(|&&b| b == 0).count().min(7);
+            let ob = off.unwrap_or(0).to_le_bytes();
+            let os = if off.is_some() { 8 } else { 0 };
+            v.push((os << 4 | ls) as u8);
+            v.extend_from_slice(&lb[..ls]);
+            v.extend_from_slice(&ob[..os]);
+        }
+        v.push(0);
+        v
+    }
+
+    /// Non-resident $DATA attribute (first segment). `alloc`/`real` mimic the header fields.
+    fn data_attr(name: &str, flags: u16, alloc: u64, real: u64, mapping: &[u8]) -> Vec<u8> {
         let name16: Vec<u16> = name.encode_utf16().collect();
-        let runs = 0x48 + name16.len() * 2;
-        let len = (runs + 1 + 7) & !7;
+        let ro = (0x48 + name16.len() * 2 + 7) & !7;
+        let len = (ro + mapping.len() + 7) & !7;
         let mut a = vec![0u8; len];
         a[0..4].copy_from_slice(&0x80u32.to_le_bytes());
         a[4..8].copy_from_slice(&(len as u32).to_le_bytes());
@@ -352,14 +393,14 @@ mod tests {
         a[9] = name16.len() as u8;
         a[0x0A..0x0C].copy_from_slice(&0x48u16.to_le_bytes());
         a[0x0C..0x0E].copy_from_slice(&flags.to_le_bytes());
-        a[0x20..0x22].copy_from_slice(&(runs as u16).to_le_bytes());
+        a[0x20..0x22].copy_from_slice(&(ro as u16).to_le_bytes());
         a[0x28..0x30].copy_from_slice(&alloc.to_le_bytes());
         a[0x30..0x38].copy_from_slice(&real.to_le_bytes());
         a[0x38..0x40].copy_from_slice(&real.to_le_bytes());
-        a[0x40..0x48].copy_from_slice(&on_disk.to_le_bytes());
         for (i, c) in name16.iter().enumerate() {
             a[0x48 + i * 2..0x4A + i * 2].copy_from_slice(&c.to_le_bytes());
         }
+        a[ro..ro + mapping.len()].copy_from_slice(mapping);
         a
     }
 
@@ -384,30 +425,43 @@ mod tests {
     }
 
     fn size_of(attrs: &[Vec<u8>]) -> u64 {
-        parse_record(&mut record(attrs), 0).unwrap().size
+        parse_record(&mut record(attrs), 0, CLUSTER).unwrap().size
     }
 
     #[test]
     fn badclus_bad_stream_counts_as_zero() {
-        // $BadClus:$Bad — sparse, logical size == volume size, nothing on disk.
-        assert_eq!(size_of(&[data_attr("$Bad", ATTR_SPARSE, 198 * GB, 198 * GB, 0)]), 0);
+        // $BadClus:$Bad: one sparse run spanning the volume, no sparse flag, alloc == real == volume.
+        let clusters = 198 * GB / CLUSTER;
+        let a = data_attr("$Bad", 0, 198 * GB, 198 * GB, &runs(&[(clusters, None)]));
+        assert_eq!(size_of(&[a]), 0);
     }
 
     #[test]
-    fn sparse_named_stream_uses_on_disk_size() {
-        // $UsnJrnl:$J — 40 GB logical, 32 MB actually allocated.
-        assert_eq!(size_of(&[data_attr("$J", ATTR_SPARSE, 40 * GB, 40 * GB, 32 << 20)]), 32 << 20);
+    fn sparse_named_stream_counts_mapped_clusters() {
+        // $UsnJrnl:$J: 40 GB of holes followed by 32 MB of live journal.
+        let hole = 40 * GB / CLUSTER;
+        let live = (32u64 << 20) / CLUSTER;
+        let a = data_attr("$J", 0x8000, 40 * GB, 40 * GB + (32 << 20), &runs(&[(hole, None), (live, Some(123_456))]));
+        assert_eq!(size_of(&[a]), 32 << 20);
     }
 
     #[test]
     fn unnamed_stream_uses_logical_size() {
-        assert_eq!(size_of(&[data_attr("", 0, 8192, 5000, 0)]), 5000);
-        assert_eq!(size_of(&[data_attr("", ATTR_SPARSE, 10 * GB, 10 * GB, GB)]), 10 * GB);
+        assert_eq!(size_of(&[data_attr("", 0, 8192, 5000, &runs(&[(2, Some(100))]))]), 5000);
+        // Sparse VM disk: logical size, like Explorer and the directory walker.
+        assert_eq!(size_of(&[data_attr("", 0x8000, 10 * GB, 10 * GB, &runs(&[(10, Some(5)), (100, None)]))]), 10 * GB);
     }
 
     #[test]
-    fn plain_named_stream_uses_allocated_size() {
-        assert_eq!(size_of(&[data_attr("Zone.Identifier", 0, 4096, 26, 0)]), 26);
-        assert_eq!(size_of(&[data_attr("", 0, 4096, 1000, 0), data_attr("ads", 0, 8192, 8000, 0)]), 9000);
+    fn named_stream_counts_its_clusters() {
+        let main = data_attr("", 0, 4096, 1000, &runs(&[(1, Some(50))]));
+        let ads = data_attr("ads", 0, 8192, 8000, &runs(&[(2, Some(60))]));
+        assert_eq!(size_of(&[main, ads]), 1000 + 2 * CLUSTER);
+    }
+
+    #[test]
+    fn mapping_pairs_decode() {
+        assert_eq!(mapped_clusters(&runs(&[(7, Some(1)), (5, None), (300, Some(-2))])), 307);
+        assert_eq!(decode_runs(&runs(&[(7, Some(10)), (5, None), (300, Some(-4))])), vec![(10, 7), (SPARSE, 5), (6, 300)]);
     }
 }

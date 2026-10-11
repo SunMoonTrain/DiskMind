@@ -12,9 +12,9 @@ use std::io::{BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 
 const KEEP: usize = 30;
-/// Snapshot format version. MFT snapshots below 2 over-counted sparse metadata streams
+/// Snapshot format version. MFT snapshots below 3 over-counted sparse metadata streams
 /// ($BadClus:$Bad, $UsnJrnl:$J) by up to the whole volume size and are discarded.
-pub const VER: u32 = 2;
+pub const VER: u32 = 3;
 
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -35,7 +35,7 @@ pub struct SnapMeta {
 
 impl SnapMeta {
     fn valid(&self) -> bool {
-        !(self.mode == "MFT" && self.ver < 2)
+        !(self.mode == "MFT" && self.ver < VER)
     }
 }
 
