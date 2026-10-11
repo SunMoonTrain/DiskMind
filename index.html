@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>DiskMind</title>
+  </head>
+  <body>
+    <header id="titlebar" data-tauri-drag-region>
+      <div class="brand" data-tauri-drag-region>
+        <div class="logo"><i></i><i></i><i></i><i></i></div>
+        <span data-tauri-drag-region>Disk<b>Mind</b></span>
+      </div>
+      <div class="tb-spacer" data-tauri-drag-region></div>
+      <button id="adminBtn" class="chip warn hidden" title="以管理员身份重启后可直接读取 NTFS 主文件表，速度提升 10 倍以上">
+        <svg viewBox="0 0 24 24"><path d="M13 2 4 14h7l-1 8 9-12h-7z" /></svg>启用 MFT 极速扫描
+      </button>
+      <span id="adminBadge" class="chip ok hidden">
+        <svg viewBox="0 0 24 24"><path d="M13 2 4 14h7l-1 8 9-12h-7z" /></svg>MFT 极速模式
+      </span>
+      <div class="win-ctl">
+        <button id="wMin" title="最小化"><svg viewBox="0 0 12 12"><path d="M2 6h8" /></svg></button>
+        <button id="wMax" title="最大化"><svg viewBox="0 0 12 12"><rect x="2.5" y="2.5" width="7" height="7" /></svg></button>
+        <button id="wClose" class="close" title="关闭"><svg viewBox="0 0 12 12"><path d="M3 3l6 6M9 3l-6 6" /></svg></button>
+      </div>
+    </header>
+
+    <section id="welcome">
+      <div class="hero">
+        <h1>看清每一个字节的去向</h1>
+        <p>选择一个磁盘开始扫描。每次扫描都会被记住，下次自动告诉你哪些文件夹变大了。</p>
+      </div>
+      <div id="drives" class="drives"></div>
+      <div class="hero-actions">
+        <button id="pickFolder" class="btn ghost">
+          <svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" /></svg>
+          扫描指定文件夹…
+        </button>
+      </div>
+    </section>
+
+    <section id="main" class="hidden">
+      <div class="toolbar">
+        <button id="homeBtn" class="icon-btn" title="返回磁盘列表">
+          <svg viewBox="0 0 24 24"><path d="M3 11 12 4l9 7M5 10v10h14V10" /></svg>
+        </button>
+        <button id="upBtn" class="icon-btn" title="上一级 (Backspace)">
+          <svg viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7" /></svg>
+        </button>
+        <nav id="crumbs" class="crumbs"></nav>
+        <div class="seg" id="viewSeg">
+          <button data-v="treemap" class="on">
+            <svg viewBox="0 0 24 24"><rect x="3" y="3" width="10" height="18" /><rect x="13" y="3" width="8" height="10" /><rect x="13" y="13" width="8" height="8" /></svg>树图
+          </button>
+          <button data-v="sunburst">
+            <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3" /><path d="M12 3a9 9 0 1 1-9 9" /><path d="M12 6.5A5.5 5.5 0 1 1 6.5 12" /></svg>旭日图
+          </button>
+        </div>
+        <div class="seg" id="colorSeg">
+          <button data-c="dir" class="on">按目录</button>
+          <button data-c="type">按类型</button>
+          <button data-c="delta">按变化</button>
+        </div>
+        <button id="rescanBtn" class="btn primary sm">
+          <svg viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.3-5.7M20 4v5h-5" /></svg>重新扫描
+        </button>
+      </div>
+
+      <div class="body">
+        <aside class="panel left">
+          <div class="cur-head" id="curHead"></div>
+          <div class="list-head">
+            <span>名称</span>
+            <button id="sortBtn" class="link">按大小 ▾</button>
+          </div>
+          <div id="list" class="list"></div>
+        </aside>
+
+        <div class="panel chart-panel">
+          <div id="chartWrap" class="chart-wrap"></div>
+          <div id="legend" class="legend hidden"></div>
+        </div>
+
+        <aside class="panel right">
+          <div class="tabs" id="tabs">
+            <button data-t="changes" class="on">变化</button>
+            <button data-t="files">大文件</button>
+            <button data-t="types">类型</button>
+            <button data-t="history">历史</button>
+          </div>
+          <div id="tabBody" class="tab-body"></div>
+        </aside>
+      </div>
+      <footer id="status" class="status"></footer>
+    </section>
+
+    <div id="scanOverlay" class="overlay hidden">
+      <div class="scan-card">
+        <div class="radar">
+          <div class="grid"></div>
+          <div class="sweep"></div>
+          <svg class="ring" viewBox="0 0 200 200"><circle cx="100" cy="100" r="92" /><circle id="pctRing" cx="100" cy="100" r="92" /></svg>
+          <div class="radar-center">
+            <div id="scanBig" class="big">0</div>
+            <div id="scanBigLabel" class="lbl">个文件</div>
+          </div>
+        </div>
+        <div id="scanPath" class="scan-path"></div>
+        <div class="scan-stats">
+          <div><b id="sDirs">0</b><span>文件夹</span></div>
+          <div><b id="sBytes">0 B</b><span>已发现</span></div>
+          <div><b id="sTime">0 s</b><span>用时</span></div>
+        </div>
+        <div id="scanPhase" class="scan-phase"></div>
+        <button id="cancelScan" class="btn ghost sm">取消</button>
+      </div>
+    </div>
+
+    <div id="tooltip" class="tooltip hidden"></div>
+    <div id="ctxMenu" class="ctx hidden"></div>
+    <div id="toast" class="toast"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
