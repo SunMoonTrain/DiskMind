@@ -2,7 +2,7 @@
 //! (no admin rights, non-NTFS volume, or scanning a sub-folder).
 
 use crate::progress::Counters;
-use crate::tree::{RawTree, NONE};
+use crate::tree::{filetime_to_unix, RawTree, NONE};
 use rayon::prelude::*;
 use std::os::windows::fs::MetadataExt;
 use std::path::PathBuf;
@@ -12,7 +12,7 @@ const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
 
 struct DirRes {
     name: Box<str>,
-    files: Vec<(Box<str>, u64)>,
+    files: Vec<(Box<str>, u64, u32)>,
     dirs: Vec<DirRes>,
 }
 
@@ -34,7 +34,7 @@ fn walk(path: PathBuf, name: Box<str>, c: &Counters, cancel: &AtomicBool) -> Dir
                     sub.push((e.path(), nm));
                 } else {
                     bytes += md.len();
-                    files.push((nm, md.len()));
+                    files.push((nm, md.len(), filetime_to_unix(md.last_write_time())));
                 }
             }
             c.files.fetch_add(files.len() as u64, Relaxed);
@@ -55,7 +55,7 @@ pub fn scan(root: &str, c: &Counters, cancel: &AtomicBool) -> RawTree {
         .expect("thread pool");
     let res = pool.install(|| walk(PathBuf::from(root), root.into(), c, cancel));
 
-    let mut raw = RawTree { names: Vec::new(), parent: Vec::new(), size: Vec::new(), is_dir: Vec::new(), root: 0 };
+    let mut raw = RawTree { names: Vec::new(), parent: Vec::new(), size: Vec::new(), is_dir: Vec::new(), mtime: Vec::new(), root: 0 };
     // Iterative flatten (deep trees would otherwise risk stack overflow).
     let mut stack = vec![(res, NONE)];
     while let Some((d, p)) = stack.pop() {
@@ -64,11 +64,13 @@ pub fn scan(root: &str, c: &Counters, cancel: &AtomicBool) -> RawTree {
         raw.parent.push(p);
         raw.size.push(0);
         raw.is_dir.push(true);
-        for (n, s) in d.files {
+        raw.mtime.push(0);
+        for (n, s, t) in d.files {
             raw.names.push(n);
             raw.parent.push(id);
             raw.size.push(s);
             raw.is_dir.push(false);
+            raw.mtime.push(t);
         }
         stack.extend(d.dirs.into_iter().map(|c| (c, id)));
     }

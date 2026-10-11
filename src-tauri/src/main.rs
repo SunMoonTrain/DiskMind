@@ -5,18 +5,19 @@ mod elevate;
 mod history;
 mod mft;
 mod progress;
+mod report;
 mod sys;
 mod tree;
 mod walker;
 
 fn main() {
-    // `diskmind --bench <path>`: headless scan timing, for profiling the scanners.
+    // `diskmind --bench <path> [report.md]`: headless scan timing (and AI report), for profiling.
     let args: Vec<String> = std::env::args().collect();
     if args.len() >= 4 && args[1] == elevate::FLAG {
         std::process::exit(elevate::helper_main(&args[2], &args[3]));
     }
     if args.len() >= 3 && args[1] == "--bench" {
-        bench(&args[2]);
+        bench(&args[2], args.get(3).map(String::as_str));
         return;
     }
 
@@ -38,12 +39,14 @@ fn main() {
             commands::set_baseline,
             commands::get_path,
             commands::reveal_path,
+            commands::export_report,
+            commands::write_text_file,
         ])
         .run(tauri::generate_context!())
         .expect("error while running DiskMind");
 }
 
-fn bench(path: &str) {
+fn bench(path: &str, report_out: Option<&str>) {
     use std::sync::atomic::AtomicBool;
     let c = progress::Counters::default();
     let cancel = AtomicBool::new(false);
@@ -61,8 +64,17 @@ fn bench(path: &str) {
         walker::scan(path, &c, &cancel)
     };
     let t1 = t0.elapsed();
-    let t = tree::Tree::build(raw, path.to_string());
+    let mut t = tree::Tree::build(raw, path.to_string());
     let t2 = t0.elapsed();
+    if let Some(out) = report_out {
+        t.mode = if use_mft { "MFT" } else { "遍历" }.into();
+        t.scan_time = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as i64;
+        let opts = report::ReportOpts { scope: t.root, anonymize: true, tz_offset_min: -480 };
+        let r0 = std::time::Instant::now();
+        let md = report::build(&t, &opts, sys::drives().iter().find(|d| d.root.eq_ignore_ascii_case(&path[..3.min(path.len())])));
+        println!("report: {} chars, {} lines in {:?}", md.chars().count(), md.lines().count(), r0.elapsed());
+        std::fs::write(out, md).unwrap();
+    }
     println!(
         "mode={} files={} dirs={} total={:.2} GB scan={:?} build={:?}",
         if use_mft { "mft" } else { "walk" },

@@ -46,7 +46,7 @@ agg(0);
 for (const n of nodes) if (n.dir || n.size > 16 * MB) n.prev = Math.max(0, Math.round(n.size * (1 - (rnd() - 0.6) * 0.5)));
 nodes[0].prev = nodes[0].size - 3200 * MB;
 
-const item = (n: N): Item => ({ id: n.id, parent: n.parent, name: n.name, size: n.size, files: n.files, dir: n.dir, prev: n.prev, other: 0, hasChildren: n.kids.length > 0 });
+const item = (n: N): Item => ({ id: n.id, parent: n.parent, name: n.name, size: n.size, files: n.files, dir: n.dir, prev: n.prev, other: 0, hasChildren: n.kids.length > 0, mtime: Math.floor(Date.now() / 1000) - ((n.id * 7919) % 900) * 86400 });
 const pathOf = (i: number): string => {
   const parts: string[] = [];
   for (let x = i; x > 0; x = nodes[x].parent) parts.push(nodes[x].name);
@@ -108,7 +108,7 @@ export const mockApi = {
           rc++;
         }
       }
-      if (rc) out.push({ id: -x - 1, parent: x, name: `${rc} 个小项目`, size: rest, files: rc, dir: false, prev: null, other: rc, hasChildren: false });
+      if (rc) out.push({ id: -x - 1, parent: x, name: `${rc} 个小项目`, size: rest, files: rc, dir: false, prev: null, other: rc, hasChildren: false, mtime: 0 });
     }
     return out;
   },
@@ -148,4 +148,13 @@ export const mockApi = {
   setBaseline: async () => null,
   getPath: async (id: number) => pathOf(id),
   revealPath: async () => {},
+  exportReport: async (opts: { scope: number; anonymize: boolean; tzOffsetMin: number }) => {
+    const lines = [`# 磁盘占用分析数据（DiskMind 导出）`, '', `- 分析范围：\`${opts.anonymize ? 'C:\\Users\\<当前用户>' : pathOf(opts.scope)}\``, '', '## 1. 目录树（只展开大头）', '', '```text'];
+    desc(opts.scope, (n) => {
+      if (n.size > 2 * 1024 * MB) lines.push(`${(n.size / 1024 / MB).toFixed(1).padStart(7)} GB  ${pathOf(n.id)}`);
+    });
+    lines.push('```', '', '## 请帮我分析', '', '1. 哪些占用可以安全清理或迁移到其他磁盘？');
+    return lines.join('\n');
+  },
+  writeTextFile: async () => {},
 };

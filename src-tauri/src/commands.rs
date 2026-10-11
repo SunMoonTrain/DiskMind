@@ -2,7 +2,7 @@ use crate::history::{self, SnapMeta};
 use crate::progress::Counters;
 use crate::sys::{self, DriveInfo};
 use crate::tree::{BaselineInfo, Changes, ExtItem, FileItem, Item, NodeInfo, RawTree, Tree};
-use crate::{elevate, mft, walker};
+use crate::{elevate, mft, report, walker};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering::*};
@@ -231,6 +231,8 @@ fn scan_inner(app: &AppHandle, state: &State<'_, AppState>, root: &str, use_mft:
     c.set_phase("构建索引");
     c.total.store(0, Relaxed);
     let mut tree = Tree::build(raw, root.to_string());
+    tree.mode = mode.to_string();
+    tree.scan_time = now_ms();
     let elapsed_ms = t0.elapsed().as_millis() as u64;
 
     c.set_phase("对比历史");
@@ -331,6 +333,21 @@ pub async fn set_baseline(app: AppHandle, state: State<'_, AppState>, file: Stri
 #[tauri::command]
 pub async fn get_path(state: State<'_, AppState>, id: u32) -> Res<String> {
     with_tree(&state, |t| t.path_of(id))
+}
+
+#[tauri::command]
+pub async fn export_report(state: State<'_, AppState>, opts: report::ReportOpts) -> Res<String> {
+    let drives = sys::drives();
+    with_tree(&state, |t| {
+        let letter = t.root_path.get(..3).unwrap_or_default();
+        let drive = drives.iter().find(|d| d.root.eq_ignore_ascii_case(letter));
+        report::build(t, &opts, drive)
+    })
+}
+
+#[tauri::command]
+pub async fn write_text_file(path: String, content: String) -> Res<()> {
+    std::fs::write(&path, content).map_err(|e| format!("保存失败：{e}"))
 }
 
 #[tauri::command]

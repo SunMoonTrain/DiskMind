@@ -5,7 +5,7 @@
 //! the directory hierarchy through the filesystem API.
 
 use crate::progress::Counters;
-use crate::tree::{RawTree, NONE};
+use crate::tree::{filetime_to_unix, RawTree, NONE};
 use rayon::prelude::*;
 use std::fs::File;
 use std::os::windows::fs::FileExt;
@@ -140,6 +140,7 @@ struct Parsed {
     name: Option<Box<str>>,
     parent: u32,
     size: u64,
+    mtime: u32,
 }
 
 fn parse_record(rec: &mut [u8], idx: u32, cluster: u64) -> Option<Parsed> {
@@ -155,6 +156,7 @@ fn parse_record(rec: &mut [u8], idx: u32, cluster: u64) -> Option<Parsed> {
     let mut name = None;
     let mut parent = NONE;
     let mut size = 0u64;
+    let mut mtime = 0u32;
     while off + 16 <= rec.len() {
         let ty = u32le(rec, off);
         if ty == 0xFFFF_FFFF {
@@ -168,6 +170,13 @@ fn parse_record(rec: &mut [u8], idx: u32, cluster: u64) -> Option<Parsed> {
         let nonres = rec[off + 8] != 0;
         let attr_name_len = rec[off + 9];
         match ty {
+            // $STANDARD_INFORMATION: last-write ("altered") time at +8.
+            0x10 if !nonres && len >= 0x18 => {
+                let v = off + u16le(rec, off + 0x14) as usize;
+                if v + 16 <= end {
+                    mtime = filetime_to_unix(u64le(rec, v + 8));
+                }
+            }
             // $FILE_NAME: always resident. Skip DOS 8.3 names (namespace 2).
             0x30 if !nonres && name.is_none() && len >= 0x18 => {
                 let v = off + u16le(rec, off + 0x14) as usize;
@@ -208,7 +217,7 @@ fn parse_record(rec: &mut [u8], idx: u32, cluster: u64) -> Option<Parsed> {
         }
         off = end;
     }
-    Some(Parsed { idx, base: if base == 0 { NONE } else { base }, dir: flags & 2 != 0, name, parent, size })
+    Some(Parsed { idx, base: if base == 0 { NONE } else { base }, dir: flags & 2 != 0, name, parent, size, mtime })
 }
 
 pub fn scan(letter: char, c: &Counters, cancel: &AtomicBool) -> Result<RawTree, String> {
@@ -248,6 +257,7 @@ pub fn scan(letter: char, c: &Counters, cancel: &AtomicBool) -> Result<RawTree, 
     let mut parent = vec![NONE; total];
     let mut size = vec![0u64; total];
     let mut is_dir = vec![false; total];
+    let mut mtime = vec![0u32; total];
     let rs = rec_size as usize;
 
     std::thread::scope(|s| -> Result<(), String> {
@@ -295,6 +305,7 @@ pub fn scan(letter: char, c: &Counters, cancel: &AtomicBool) -> Result<RawTree, 
                 let i = p.idx as usize;
                 if p.base == NONE {
                     is_dir[i] = p.dir;
+                    mtime[i] = p.mtime;
                     size[i] += p.size;
                     if let Some(n) = p.name {
                         names[i] = n;
@@ -334,7 +345,7 @@ pub fn scan(letter: char, c: &Counters, cancel: &AtomicBool) -> Result<RawTree, 
         return Err("MFT 过小".into());
     }
     names[ROOT_RECORD as usize] = format!("{letter}:\\").into_boxed_str();
-    Ok(RawTree { names, parent, size, is_dir, root: ROOT_RECORD })
+    Ok(RawTree { names, parent, size, is_dir, mtime, root: ROOT_RECORD })
 }
 
 fn mft_runs(rec: &[u8]) -> Option<(Vec<(u64, u64)>, u64)> {

@@ -58,6 +58,9 @@
           <button data-c="type">按类型</button>
           <button data-c="delta">按变化</button>
         </div>
+        <button id="exportBtn" class="btn sm" title="生成可直接粘贴给 AI 的分析数据">
+          <svg viewBox="0 0 24 24"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z" /><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z" /></svg>导出给 AI
+        </button>
         <button id="rescanBtn" class="btn primary sm">
           <svg viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.3-5.7M20 4v5h-5" /></svg>重新扫描
         </button>
@@ -110,6 +113,36 @@
         </div>
         <div id="scanPhase" class="scan-phase"></div>
         <button id="cancelScan" class="btn ghost sm">取消</button>
+      </div>
+    </div>
+
+    <div id="exportModal" class="modal hidden">
+      <div class="modal-card">
+        <div class="modal-head">
+          <div>
+            <h3>导出给 AI 分析</h3>
+            <p>复制后直接粘贴给 ChatGPT、Claude、DeepSeek 等，让它告诉你哪些能清理、空间为什么在增长。</p>
+          </div>
+          <button id="exClose" class="icon-btn" title="关闭 (Esc)"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18" /></svg></button>
+        </div>
+        <div class="ex-opts">
+          <div class="seg" id="exScope">
+            <button data-s="root" class="on">整个扫描</button>
+            <button data-s="cur" id="exScopeCur">当前文件夹</button>
+          </div>
+          <label class="chk"><input type="checkbox" id="exAnon" checked /><span>隐藏用户名和个人文件夹内的名称</span></label>
+        </div>
+        <div class="ex-sections">
+          <span>精简目录树</span><span>按扩展名汇总</span><span>最大的 50 个文件</span><span>一年未修改的大项目</span><span>与上次扫描的变化</span>
+        </div>
+        <pre id="exPreview" class="ex-preview"></pre>
+        <div class="modal-foot">
+          <span id="exStats" class="ex-stats"></span>
+          <button id="exSave" class="btn sm">保存为 .md</button>
+          <button id="exCopy" class="btn sm primary">
+            <svg viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2" /><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" /></svg>复制到剪贴板
+          </button>
+        </div>
       </div>
     </div>
 

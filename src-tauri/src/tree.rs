@@ -20,7 +20,18 @@ pub struct RawTree {
     pub parent: Vec<u32>,
     pub size: Vec<u64>,
     pub is_dir: Vec<bool>,
+    /// Last-write time, Unix seconds (0 = unknown).
+    pub mtime: Vec<u32>,
     pub root: u32,
+}
+
+/// Windows FILETIME (100 ns since 1601) -> Unix seconds, 0 when unset or out of range.
+pub fn filetime_to_unix(ft: u64) -> u32 {
+    const EPOCH_DIFF: u64 = 116_444_736_000_000_000;
+    if ft <= EPOCH_DIFF {
+        return 0;
+    }
+    ((ft - EPOCH_DIFF) / 10_000_000).min(u32::MAX as u64) as u32
 }
 
 #[derive(Serialize, Clone)]
@@ -49,6 +60,11 @@ pub struct Tree {
     pub size: Vec<u64>,
     pub files: Vec<u32>,
     pub is_dir: Vec<bool>,
+    /// Files: last-write time; folders: newest last-write time inside. Unix seconds, 0 = unknown.
+    pub mtime: Vec<u32>,
+    /// When this scan finished (Unix ms) and how ("MFT" / "遍历"); set by the scan command.
+    pub scan_time: i64,
+    pub mode: String,
     pub child_start: Vec<u32>,
     pub child_list: Vec<u32>,
     /// BFS order of every reachable node, root first.
@@ -74,6 +90,7 @@ pub struct Item {
     /// > 0 for an aggregate "N small items" entry.
     pub other: u32,
     pub has_children: bool,
+    pub mtime: u32,
 }
 
 #[derive(Serialize)]
@@ -141,7 +158,7 @@ pub struct ExtItem {
 
 impl Tree {
     pub fn build(raw: RawTree, root_path: String) -> Tree {
-        let RawTree { mut names, parent, mut size, is_dir, root } = raw;
+        let RawTree { mut names, parent, mut size, is_dir, mut mtime, root } = raw;
         let n = names.len();
         let valid = |i: usize| {
             i as u32 != root && (parent[i] as usize) < n && !names[i].is_empty()
@@ -183,8 +200,12 @@ impl Tree {
         let mut files = vec![0u32; n];
         let mut file_count = 0u64;
         for &x in &order {
-            if !is_dir[x as usize] {
-                files[x as usize] = 1;
+            let x = x as usize;
+            if is_dir[x] {
+                // A folder's time becomes the newest last-write time of any file inside it.
+                mtime[x] = 0;
+            } else {
+                files[x] = 1;
                 file_count += 1;
             }
         }
@@ -193,6 +214,7 @@ impl Tree {
                 let (x, p) = (x as usize, parent[x as usize] as usize);
                 size[p] += size[x];
                 files[p] += files[x];
+                mtime[p] = mtime[p].max(mtime[x]);
             }
         }
         let dir_count = order.len() as u64 - file_count;
@@ -214,6 +236,9 @@ impl Tree {
             size,
             files,
             is_dir,
+            mtime,
+            scan_time: 0,
+            mode: String::new(),
             child_start,
             child_list,
             order,
@@ -258,6 +283,7 @@ impl Tree {
             prev: self.prev_of(i),
             other: 0,
             has_children: self.child_start[i + 1] > self.child_start[i],
+            mtime: self.mtime[i],
         }
     }
 
@@ -349,6 +375,7 @@ impl Tree {
                         prev: None,
                         other: rest.len() as u32,
                         has_children: false,
+                        mtime: rest.iter().map(|&c| self.mtime[c as usize]).max().unwrap_or(0),
                     });
                 }
             }
@@ -365,7 +392,7 @@ impl Tree {
         (items, ch.len())
     }
 
-    fn for_each_desc(&self, id: u32, mut f: impl FnMut(usize)) {
+    pub fn for_each_desc(&self, id: u32, mut f: impl FnMut(usize)) {
         if id == self.root {
             self.order.iter().for_each(|&x| f(x as usize));
             return;
@@ -619,12 +646,13 @@ mod tests {
     ///       ├─ B/ ── b1 (20 MB)
     ///       └─ big.iso (size_iso)
     fn sample(a1: u64, with_b: bool, iso: u64) -> Tree {
-        let mut raw = RawTree { names: vec![], parent: vec![], size: vec![], is_dir: vec![], root: 0 };
+        let mut raw = RawTree { names: vec![], parent: vec![], size: vec![], is_dir: vec![], mtime: vec![], root: 0 };
         let mut add = |n: &str, p: u32, s: u64, d: bool| {
             raw.names.push(n.into());
             raw.parent.push(p);
             raw.size.push(s);
             raw.is_dir.push(d);
+            raw.mtime.push(0);
             raw.names.len() as u32 - 1
         };
         let r = add("X:\\", NONE, 0, true);

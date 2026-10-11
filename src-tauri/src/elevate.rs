@@ -163,6 +163,7 @@ mod tests {
             parent: vec![NONE, 0, NONE, 1],
             size: vec![0, 0, 0, 123_456_789_012],
             is_dir: vec![true, true, false, false],
+            mtime: vec![0, 0, 0, 1_700_000_000],
             root: 0,
         };
         let bytes = bincode::serialize(&raw).unwrap();
@@ -171,6 +172,7 @@ mod tests {
         assert_eq!(back.parent, raw.parent);
         assert_eq!(back.size, raw.size);
         assert_eq!(back.is_dir, raw.is_dir);
+        assert_eq!(back.mtime, raw.mtime);
         assert_eq!(back.root, 0);
     }
 }

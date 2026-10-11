@@ -92,6 +92,7 @@ function showTip(it: Item | null, ev: MouseEvent | null) {
     <div class="kv"><span>大小</span><b>${fmtSize(it.size)}</b></div>
     <div class="kv"><span>占当前</span><b>${fmtPct(share)}</b></div>
     ${it.dir || it.other ? `<div class="kv"><span>文件数</span><b>${fmtNum(it.files)}</b></div>` : ''}
+    ${it.mtime ? `<div class="kv"><span>${it.dir || it.other ? '最近修改' : '修改时间'}</span><b>${fmtTime(it.mtime * 1000).slice(0, 10)} · ${fmtAgo(it.mtime * 1000)}</b></div>` : ''}
     ${delta}
     <div class="hint">${it.dir ? '双击进入 · 右键更多' : it.other ? `已合并 ${fmtNum(it.other)} 个较小项目` : '右键可在资源管理器中显示'}</div>`;
   tip.classList.remove('hidden');
@@ -674,6 +675,115 @@ function renderHistory(body: HTMLElement) {
   });
 }
 
+// ------------------------------------------------------------------ export for AI
+
+const ex = { scope: 'root' as 'root' | 'cur', text: '', seq: 0 };
+
+function loadAnonPref(): boolean {
+  try {
+    return localStorage.getItem('exAnon') !== '0';
+  } catch {
+    return true;
+  }
+}
+
+/** Rough token estimate: CJK ≈ 1 token per char, other text ≈ 1 per 3.5 chars. */
+function estimateTokens(s: string): number {
+  let cjk = 0;
+  for (const ch of s) if (ch.charCodeAt(0) > 0x2e80) cjk++;
+  return Math.round(cjk + (s.length - cjk) / 3.5);
+}
+
+async function refreshExport() {
+  const seq = ++ex.seq;
+  const pre = $('#exPreview');
+  pre.classList.add('loading');
+  try {
+    const scope = ex.scope === 'cur' && st.cur >= 0 ? st.cur : st.rootId;
+    const anonymize = ($('#exAnon') as HTMLInputElement).checked;
+    const text = await api.exportReport({ scope, anonymize, tzOffsetMin: new Date().getTimezoneOffset() });
+    if (seq !== ex.seq) return;
+    ex.text = text;
+    pre.textContent = text;
+    pre.scrollTop = 0;
+    const k = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(1)} 千` : String(n));
+    $('#exStats').textContent = `${fmtNum(text.split('\n').length)} 行 · ${k(text.length)}字符 · 约 ${k(estimateTokens(text))} tokens`;
+  } catch (e) {
+    pre.textContent = String(e);
+  } finally {
+    if (seq === ex.seq) pre.classList.remove('loading');
+  }
+}
+
+function openExport() {
+  if (st.rootId < 0) return;
+  closeMenu();
+  const curBtn = $('#exScopeCur');
+  const atRoot = st.cur === st.rootId || st.cur < 0;
+  curBtn.classList.toggle('hidden', atRoot);
+  curBtn.textContent = `当前文件夹：${st.info?.name ?? ''}`;
+  if (atRoot) ex.scope = 'root';
+  $('#exScope').querySelectorAll<HTMLElement>('button').forEach((b) => b.classList.toggle('on', b.dataset.s === ex.scope));
+  ($('#exAnon') as HTMLInputElement).checked = loadAnonPref();
+  $('#exPreview').textContent = '生成中…';
+  $('#exStats').textContent = '';
+  $('#exportModal').classList.remove('hidden');
+  refreshExport();
+}
+
+function closeExport() {
+  $('#exportModal').classList.add('hidden');
+}
+
+function bindExport() {
+  $('#exportBtn').onclick = openExport;
+  $('#exClose').onclick = closeExport;
+  $('#exportModal').onmousedown = (e) => {
+    if (e.target === e.currentTarget) closeExport();
+  };
+  $('#exScope').querySelectorAll<HTMLElement>('button').forEach((b) => {
+    b.onclick = () => {
+      ex.scope = b.dataset.s as 'root' | 'cur';
+      $('#exScope').querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b));
+      refreshExport();
+    };
+  });
+  ($('#exAnon') as HTMLInputElement).onchange = (e) => {
+    try {
+      localStorage.setItem('exAnon', (e.target as HTMLInputElement).checked ? '1' : '0');
+    } catch {}
+    refreshExport();
+  };
+  $('#exCopy').onclick = async () => {
+    if (!ex.text) return;
+    try {
+      await navigator.clipboard.writeText(ex.text);
+      toast('已复制，直接粘贴给 AI 即可');
+    } catch (e) {
+      toast(`复制失败：${e}`, true);
+    }
+  };
+  $('#exSave').onclick = async () => {
+    if (!ex.text) return;
+    try {
+      const { save } = await import('@tauri-apps/plugin-dialog');
+      const d = new Date();
+      const pad = (n: number) => String(n).padStart(2, '0');
+      const drive = st.rootPath.slice(0, 1);
+      const path = await save({
+        title: '保存分析数据',
+        defaultPath: `DiskMind-${drive}盘-${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}.md`,
+        filters: [{ name: 'Markdown', extensions: ['md'] }],
+      });
+      if (!path) return;
+      await api.writeTextFile(path, ex.text);
+      toast('已保存');
+    } catch (e) {
+      toast(String(e), true);
+    }
+  };
+}
+
 // ------------------------------------------------------------------ wiring
 
 function bindUi() {
@@ -714,6 +824,7 @@ function bindUi() {
   $('#homeBtn').onclick = () => showWelcome();
   $('#upBtn').onclick = () => goUp();
   $('#rescanBtn').onclick = () => st.rootPath && startScan(st.rootPath);
+  bindExport();
   $('#cancelScan').onclick = () => api.cancelScan();
   $('#sortBtn').onclick = () => {
     st.sort = st.sort === 'size' ? 'delta' : 'size';
@@ -753,7 +864,11 @@ function bindUi() {
 
   document.addEventListener('keydown', (e) => {
     if ((e.target as HTMLElement).tagName === 'SELECT') return;
-    if (e.key === 'Escape') closeMenu();
+    if (e.key === 'Escape') {
+      closeMenu();
+      closeExport();
+    }
+    if (!$('#exportModal').classList.contains('hidden')) return;
     if ($('#main').classList.contains('hidden')) return;
     if (e.key === 'Backspace' || (e.altKey && e.key === 'ArrowLeft')) {
       e.preventDefault();

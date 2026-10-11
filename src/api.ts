@@ -11,6 +11,8 @@ export interface Item {
   prev: number | null;
   other: number;
   hasChildren: boolean;
+  /** Files: last write; folders: newest file inside. Unix seconds, 0 = unknown. */
+  mtime: number;
 }
 
 export interface DriveInfo {
@@ -112,6 +114,8 @@ const realApi = {
   setBaseline: (file: string) => invoke<Baseline | null>('set_baseline', { file }),
   getPath: (id: number) => invoke<string>('get_path', { id }),
   revealPath: (path: string, select: boolean) => invoke<void>('reveal_path', { path, select }),
+  exportReport: (opts: { scope: number; anonymize: boolean; tzOffsetMin: number }) => invoke<string>('export_report', { opts }),
+  writeTextFile: (path: string, content: string) => invoke<void>('write_text_file', { path, content }),
 };
 
 // Outside Tauri (plain browser via `npm run dev`) fall back to a fake backend for UI work.
