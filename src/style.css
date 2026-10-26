@@ -17,7 +17,8 @@
   --radius: 12px;
   /* system-ui = the user's Windows UI font */
   --font: system-ui, 'Segoe UI', 'Microsoft YaHei UI', sans-serif;
-  --mono: 'Cascadia Mono', 'JetBrains Mono', Consolas, monospace;
+  /* Code fonts have no CJK glyphs; without a fallback Chinese drops to the generic SimSun-like monospace. */
+  --mono: 'Cascadia Mono', 'JetBrains Mono', Consolas, 'Microsoft YaHei UI', 'Microsoft YaHei', monospace;
   color-scheme: dark;
 }
 
@@ -402,6 +403,7 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .run-action b { font-size: 14.5px; }
 .run-action p { margin: 0; color: var(--dim); }
 .run-action code, .sug code { font: 12px/1.5 var(--mono); color: #c9d3e6; padding: 6px 10px; border-radius: 8px; background: rgba(0, 0, 0, 0.35); border: 1px solid var(--line); word-break: break-all; user-select: text; }
+.run-action code.prose { font: 12.5px/1.6 var(--font); }
 .run-action .meta { display: flex; flex-wrap: wrap; gap: 8px; }
 .pill { font-size: 11.5px; padding: 2px 9px; border-radius: 99px; border: 1px solid var(--line2); color: var(--dim); }
 .pill.warn { color: var(--warn); border-color: rgba(255, 179, 71, 0.4); }

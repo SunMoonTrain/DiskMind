@@ -890,7 +890,7 @@ function openCleanup(r: CleanupRequest) {
   $('#runAction').innerHTML = `
     <b>${esc(a.title)}</b>
     <p>${esc(a.desc)}</p>
-    <code>${esc(a.command)}</code>
+    <code class="${a.shell ? '' : 'prose'}">${esc(a.command)}</code>
     <div class="meta">
       ${a.estimate != null ? `<span class="pill good">预计释放 ${fmtSize(a.estimate)}</span>` : ''}
       ${a.admin && !r.elevated ? '<span class="pill warn">需要管理员权限，确认后 Windows 会弹出授权提示</span>' : ''}

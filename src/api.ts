@@ -117,6 +117,8 @@ export interface CleanupAction {
   desc: string;
   command: string;
   admin: boolean;
+  /** `command` is a real command line rather than a description of a built-in operation. */
+  shell: boolean;
   estimate: number | null;
 }
 

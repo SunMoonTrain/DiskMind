@@ -38,6 +38,8 @@ pub struct ActionInfo {
     pub desc: &'static str,
     pub command: &'static str,
     pub admin: bool,
+    /// `command` is a real command line; otherwise it describes a built-in operation.
+    pub shell: bool,
     /// Bytes this is expected to free, when it can be measured up front.
     pub estimate: Option<u64>,
 }
@@ -172,7 +174,8 @@ pub fn available() -> Vec<ActionInfo> {
         jobs.into_iter()
             .filter_map(|(a, j)| {
                 let estimate = j.join().ok()?.ok()?;
-                Some(ActionInfo { id: a.id, title: a.title, desc: a.desc, command: a.command, admin: a.admin, estimate })
+                let shell = matches!(a.run, Run::Exec(..));
+                Some(ActionInfo { id: a.id, title: a.title, desc: a.desc, command: a.command, admin: a.admin, shell, estimate })
             })
             .collect()
     })
