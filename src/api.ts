@@ -111,6 +111,27 @@ export interface DeleteItem {
 /** An MCP client asking to recycle files; answered with `resolveDelete`. */
 export interface DeleteRequest { id: number; reason: string; items: DeleteItem[] }
 
+export interface CleanupAction {
+  id: string;
+  title: string;
+  desc: string;
+  command: string;
+  admin: boolean;
+  estimate: number | null;
+}
+
+/** An MCP client asking to run a built-in cleanup action; answered with `resolveDelete`. */
+export interface CleanupRequest { id: number; reason: string; action: CleanupAction; elevated: boolean }
+
+export interface Suggestion {
+  id: number;
+  title: string;
+  detail: string;
+  savings: string | null;
+  command: string | null;
+  path: string | null;
+}
+
 const realApi = {
   listDrives: () => invoke<DriveInfo[]>('list_drives'),
   isAdmin: () => invoke<boolean>('is_admin'),
@@ -130,6 +151,8 @@ const realApi = {
   writeTextFile: (path: string, content: string) => invoke<void>('write_text_file', { path, content }),
   mcpUrl: () => invoke<string>('mcp_url'),
   resolveDelete: (id: number, paths: string[]) => invoke<void>('resolve_delete', { id, paths }),
+  getSuggestions: () => invoke<Suggestion[]>('get_suggestions'),
+  dismissSuggestion: (id: number | null) => invoke<Suggestion[]>('dismiss_suggestion', { id }),
 };
 
 // Outside Tauri (plain browser via `npm run dev`) fall back to a fake backend for UI work.

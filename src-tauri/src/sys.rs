@@ -119,3 +119,9 @@ pub fn recycle(path: &str) -> Result<(), String> {
         Ok(())
     }
 }
+
+/// Junctions, symlinks and other reparse points, which cleanup must not descend into.
+pub fn is_reparse(m: &std::fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    m.file_attributes() & 0x400 != 0
+}

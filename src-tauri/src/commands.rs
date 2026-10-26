@@ -20,6 +20,8 @@ pub struct AppState {
     pub last_done: Mutex<Option<ScanDone>>,
     /// MCP delete requests waiting for the user's answer in the GUI, by request id.
     pub pending_deletes: Mutex<HashMap<u64, Sender<Vec<String>>>>,
+    /// Recommendations from MCP clients, shown in the "AI 建议" tab.
+    pub suggestions: Mutex<Vec<Suggestion>>,
     /// Address of the local MCP endpoint, or why it could not start.
     pub mcp: Mutex<Result<String, String>>,
 }
@@ -32,9 +34,20 @@ impl Default for AppState {
             scanning: Arc::default(),
             last_done: Mutex::default(),
             pending_deletes: Mutex::default(),
+            suggestions: Mutex::default(),
             mcp: Mutex::new(Err("未启动".into())),
         }
     }
+}
+
+#[derive(Serialize, Clone)]
+pub struct Suggestion {
+    pub id: u64,
+    pub title: String,
+    pub detail: String,
+    pub savings: Option<String>,
+    pub command: Option<String>,
+    pub path: Option<String>,
 }
 
 #[derive(Serialize, Clone)]
@@ -387,7 +400,20 @@ pub fn mcp_url(state: State<'_, AppState>) -> Res<String> {
     state.mcp.lock().map_err(|e| e.to_string())?.clone()
 }
 
-/// The user's answer to an MCP delete request: the paths they approved (empty = declined).
+#[tauri::command]
+pub fn get_suggestions(state: State<'_, AppState>) -> Vec<Suggestion> {
+    state.suggestions.lock().unwrap().clone()
+}
+
+/// Removes one suggestion, or all of them when `id` is None.
+#[tauri::command]
+pub fn dismiss_suggestion(state: State<'_, AppState>, id: Option<u64>) -> Vec<Suggestion> {
+    let mut v = state.suggestions.lock().unwrap();
+    v.retain(|s| id.is_some_and(|id| s.id != id));
+    v.clone()
+}
+
+/// The user's answer to an MCP confirmation: the approved paths, or the action id for a cleanup (empty = declined).
 #[tauri::command]
 pub fn resolve_delete(state: State<'_, AppState>, id: u64, paths: Vec<String>) {
     if let Some(tx) = state.pending_deletes.lock().unwrap().remove(&id) {

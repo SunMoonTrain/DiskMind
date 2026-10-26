@@ -159,4 +159,6 @@ export const mockApi = {
   writeTextFile: async () => {},
   mcpUrl: async (): Promise<string> => { throw new Error('mock'); },
   resolveDelete: async () => {},
+  getSuggestions: async () => [],
+  dismissSuggestion: async () => [],
 };

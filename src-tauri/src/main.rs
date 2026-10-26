@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod cleanup;
 mod commands;
 mod elevate;
 mod history;
@@ -16,6 +17,9 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() >= 4 && args[1] == elevate::FLAG {
         std::process::exit(elevate::helper_main(&args[2], &args[3]));
+    }
+    if args.len() >= 4 && args[1] == elevate::CLEANUP_FLAG {
+        std::process::exit(elevate::cleanup_helper_main(&args[2], &args[3]));
     }
     if args.len() >= 3 && args[1] == "--bench" {
         bench(&args[2], args.get(3).map(String::as_str));
@@ -48,6 +52,8 @@ fn main() {
             commands::write_text_file,
             commands::mcp_url,
             commands::resolve_delete,
+            commands::get_suggestions,
+            commands::dismiss_suggestion,
         ])
         .run(tauri::generate_context!())
         .expect("error while running DiskMind");

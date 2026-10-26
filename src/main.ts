@@ -1,6 +1,6 @@
 import './style.css';
 import { api, onDone, onEvent, onProgress } from './api';
-import type { Change, Changes, DeleteItem, DeleteRequest, DriveInfo, Item, NodeInfo, Progress, ScanDone, SnapMeta } from './api';
+import type { Change, Changes, CleanupRequest, DeleteItem, DeleteRequest, DriveInfo, Item, NodeInfo, Progress, ScanDone, SnapMeta, Suggestion } from './api';
 import { ChartHost, ColorMode, ViewMode } from './chart';
 import { esc, extOf, fmtAgo, fmtDelta, fmtDuration, fmtNum, fmtPct, fmtShortTime, fmtSize, fmtTime } from './format';
 
@@ -17,7 +17,7 @@ const ICON = {
 };
 const TOP_HUES = [192, 266, 328, 158, 34, 214, 292, 96, 8, 178, 244, 52];
 
-type Tab = 'changes' | 'files' | 'types' | 'history';
+type Tab = 'changes' | 'files' | 'types' | 'history' | 'ai';
 
 const st = {
   admin: false,
@@ -39,6 +39,7 @@ const st = {
   changeSide: 'grown' as 'grown' | 'shrunk',
   history: [] as SnapMeta[],
   navSeq: 0,
+  suggestions: [] as Suggestion[],
 };
 
 // ------------------------------------------------------------------ chart
@@ -60,12 +61,13 @@ function chartQuery(): [number, number] {
 // ------------------------------------------------------------------ toast / tooltip
 
 let toastTimer = 0;
-function toast(msg: string, err = false) {
+/** `ms` 0 keeps the toast up until the next one. */
+function toast(msg: string, err = false, ms = err ? 5000 : 2600) {
   const t = $('#toast');
   t.textContent = msg;
   t.className = `toast show${err ? ' err' : ''}`;
   clearTimeout(toastTimer);
-  toastTimer = window.setTimeout(() => (t.className = 'toast'), err ? 5000 : 2600);
+  if (ms) toastTimer = window.setTimeout(() => (t.className = 'toast'), ms);
 }
 
 function deltaBadge(size: number, prev: number | null, removed = false): string {
@@ -456,6 +458,7 @@ async function renderTab() {
   const cur = st.cur;
   if (tab === 'changes') return renderChanges(body);
   if (tab === 'history') return renderHistory(body);
+  if (tab === 'ai') return renderSuggestions(body);
   if (tab === 'files') {
     const files = await api.getTopFiles(cur, 150).catch(() => []);
     if (st.tab !== tab || st.cur !== cur) return;
@@ -799,16 +802,42 @@ function bindExport() {
 
 // ------------------------------------------------------------------ AI cleanup (MCP)
 
-const del = { req: null as DeleteRequest | null, queue: [] as DeleteRequest[] };
+type Confirm = { kind: 'delete'; r: DeleteRequest } | { kind: 'cleanup'; r: CleanupRequest };
 
-function openDelete(r: DeleteRequest) {
-  if (del.req) {
-    del.queue.push(r);
-    return;
-  }
-  del.req = r;
+/** MCP confirmations, shown one at a time. */
+const confirm = { cur: null as Confirm | null, queue: [] as Confirm[] };
+
+function enqueueConfirm(c: Confirm) {
+  if (confirm.cur) confirm.queue.push(c);
+  else showConfirm(c);
+}
+
+function showConfirm(c: Confirm) {
+  confirm.cur = c;
   closeMenu();
   closeExport();
+  if (c.kind === 'delete') openDelete(c.r);
+  else openCleanup(c.r);
+}
+
+function answerConfirm(answer: string[]) {
+  const c = confirm.cur;
+  if (!c) return;
+  api.resolveDelete(c.r.id, answer).catch((e) => toast(String(e), true));
+  if (c.kind === 'delete') toast(answer.length ? `正在移到回收站：${answer.length} 项…` : '已拒绝 AI 的删除请求');
+  else if (!answer.length) toast('已拒绝 AI 的清理请求');
+  closeConfirm();
+}
+
+function closeConfirm() {
+  $('#delModal').classList.add('hidden');
+  $('#runModal').classList.add('hidden');
+  confirm.cur = null;
+  const next = confirm.queue.shift();
+  if (next) showConfirm(next);
+}
+
+function openDelete(r: DeleteRequest) {
   $('#delReason').textContent = r.reason;
   $('#delList').innerHTML = r.items
     .map(
@@ -830,16 +859,21 @@ function openDelete(r: DeleteRequest) {
   $('#delModal').classList.remove('hidden');
 }
 
+function deleteReq(): DeleteRequest | null {
+  return confirm.cur?.kind === 'delete' ? confirm.cur.r : null;
+}
+
 function checkedDelete(): DeleteItem[] {
-  const r = del.req;
+  const r = deleteReq();
   if (!r) return [];
   return [...$('#delList').querySelectorAll<HTMLInputElement>('input:checked')].map((c) => r.items[Number(c.dataset.i)]);
 }
 
 function renderDeleteStats() {
-  if (!del.req) return;
+  const r = deleteReq();
+  if (!r) return;
   const sel = checkedDelete();
-  const ok = del.req.items.filter((x) => !x.error).length;
+  const ok = r.items.filter((x) => !x.error).length;
   const size = `${fmtSize(sel.reduce((s, x) => s + (x.size ?? 0), 0))}${sel.some((x) => x.size == null) ? '+' : ''}`;
   $('#delStats').textContent = `已选 ${sel.length} / ${ok} 项`;
   const yes = $<HTMLButtonElement>('#delYes');
@@ -850,19 +884,18 @@ function renderDeleteStats() {
   all.indeterminate = sel.length > 0 && sel.length < ok;
 }
 
-function answerDelete(paths: string[]) {
-  const r = del.req;
-  if (!r) return;
-  api.resolveDelete(r.id, paths).catch((e) => toast(String(e), true));
-  toast(paths.length ? `正在移到回收站：${paths.length} 项…` : '已拒绝 AI 的删除请求');
-  closeDelete();
-}
-
-function closeDelete() {
-  $('#delModal').classList.add('hidden');
-  del.req = null;
-  const next = del.queue.shift();
-  if (next) openDelete(next);
+function openCleanup(r: CleanupRequest) {
+  const a = r.action;
+  $('#runReason').textContent = r.reason;
+  $('#runAction').innerHTML = `
+    <b>${esc(a.title)}</b>
+    <p>${esc(a.desc)}</p>
+    <code>${esc(a.command)}</code>
+    <div class="meta">
+      ${a.estimate != null ? `<span class="pill good">预计释放 ${fmtSize(a.estimate)}</span>` : ''}
+      ${a.admin && !r.elevated ? '<span class="pill warn">需要管理员权限，确认后 Windows 会弹出授权提示</span>' : ''}
+    </div>`;
+  $('#runModal').classList.remove('hidden');
 }
 
 /** The backend pruned recycled items from the loaded tree; redraw without rescanning. */
@@ -877,27 +910,88 @@ async function refreshAfterDelete(t: { total: number; files: number; dirs: numbe
   toast(`已移到回收站：${fmtSize(t.freed)}，清空回收站后释放空间`);
 }
 
-function bindDelete() {
+function renderSuggestions(body: HTMLElement) {
+  const list = st.suggestions;
+  if (!list.length) {
+    body.innerHTML = `<div class="empty">还没有建议<br>通过 MCP 连接的 AI 会把需要你自己处理的建议<br>（迁移游戏库、修改软件缓存位置、卸载软件等）发到这里</div>`;
+    return;
+  }
+  body.innerHTML =
+    `<div class="sug-foot"><button class="link" id="sugClear">全部清除</button></div>` +
+    list
+      .slice()
+      .reverse()
+      .map(
+        (g) => `<div class="sug" data-id="${g.id}">
+        <div class="sug-h"><b>${esc(g.title)}</b>${g.savings ? `<span class="pill good">${esc(g.savings)}</span>` : ''}
+          <button class="icon-btn" data-x title="忽略"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18" /></svg></button></div>
+        <div class="sug-d">${esc(g.detail)}</div>
+        ${g.command ? `<div class="sug-cmd"><code>${esc(g.command)}</code><button class="btn sm" data-copy>复制</button></div>` : ''}
+        ${g.path ? `<div><button class="link" data-open title="${esc(g.path)}">${ICON.explorer} 打开 ${esc(g.path)}</button></div>` : ''}
+      </div>`,
+      )
+      .join('');
+  const dismiss = (id: number | null) =>
+    api.dismissSuggestion(id).then(setSuggestions, (e) => toast(String(e), true));
+  $('#sugClear').onclick = () => dismiss(null);
+  body.querySelectorAll<HTMLElement>('.sug').forEach((el) => {
+    const g = list.find((x) => x.id === Number(el.dataset.id))!;
+    el.querySelector<HTMLElement>('[data-x]')!.onclick = () => dismiss(g.id);
+    const copy = el.querySelector<HTMLElement>('[data-copy]');
+    if (copy) copy.onclick = () => navigator.clipboard.writeText(g.command ?? '').then(() => toast('已复制命令'), (e) => toast(`复制失败：${e}`, true));
+    const open = el.querySelector<HTMLElement>('[data-open]');
+    if (open) open.onclick = () => api.revealPath(g.path ?? '', true).catch((e) => toast(String(e), true));
+  });
+}
+
+function setSuggestions(list: Suggestion[]) {
+  st.suggestions = list;
+  const badge = $('#aiBadge');
+  badge.textContent = String(list.length);
+  badge.classList.toggle('hidden', !list.length);
+  if (st.tab === 'ai') renderTab();
+}
+
+function bindMcp() {
   $('#delList').onchange = renderDeleteStats;
   $('#delList').onclick = (e) => {
     const b = (e.target as HTMLElement).closest<HTMLElement>('[data-r]');
-    if (b && del.req) api.revealPath(del.req.items[Number(b.dataset.r)].path, true).catch((err) => toast(String(err), true));
+    const r = deleteReq();
+    if (b && r) api.revealPath(r.items[Number(b.dataset.r)].path, true).catch((err) => toast(String(err), true));
   };
   $<HTMLInputElement>('#delAll').onchange = (e) => {
     const on = (e.target as HTMLInputElement).checked;
     $('#delList').querySelectorAll<HTMLInputElement>('input:not(:disabled)').forEach((c) => (c.checked = on));
     renderDeleteStats();
   };
-  $('#delNo').onclick = () => answerDelete([]);
-  $('#delYes').onclick = () => answerDelete(checkedDelete().map((x) => x.path));
-  onEvent<DeleteRequest>('mcp-delete-request', openDelete);
-  onEvent<number>('mcp-delete-cancel', (id) => {
-    if (del.req?.id === id) {
-      closeDelete();
-      toast('AI 的删除请求已超时，未删除任何文件', true);
-    } else del.queue = del.queue.filter((r) => r.id !== id);
+  $('#delNo').onclick = () => answerConfirm([]);
+  $('#delYes').onclick = () => answerConfirm(checkedDelete().map((x) => x.path));
+  $('#runNo').onclick = () => answerConfirm([]);
+  $('#runYes').onclick = () => {
+    const c = confirm.cur;
+    if (c?.kind === 'cleanup') answerConfirm([c.r.action.id]);
+  };
+  onEvent<DeleteRequest>('mcp-delete-request', (r) => enqueueConfirm({ kind: 'delete', r }));
+  onEvent<CleanupRequest>('mcp-cleanup-request', (r) => enqueueConfirm({ kind: 'cleanup', r }));
+  onEvent<number>('mcp-confirm-cancel', (id) => {
+    if (confirm.cur?.r.id === id) {
+      closeConfirm();
+      toast('AI 的请求已超时，没有做任何操作', true);
+    } else confirm.queue = confirm.queue.filter((c) => c.r.id !== id);
   });
   onEvent('tree-changed', refreshAfterDelete);
+  onEvent<string>('mcp-cleanup-started', (title) => toast(`正在运行：${title}…`, false, 0));
+  onEvent<{ title: string; ok: boolean; freed?: number; error?: string }>('mcp-cleanup-done', (d) =>
+    d.ok
+      ? toast(`${d.title}完成，可用空间增加 ${fmtSize(d.freed ?? 0)}${st.rootId >= 0 ? '，按 F5 重新扫描查看变化' : ''}`, false, 6000)
+      : toast(`${d.title}失败：${d.error}`, true),
+  );
+  onEvent<Suggestion[]>('suggestions-changed', (list) => {
+    const added = list.length > st.suggestions.length;
+    setSuggestions(list);
+    if (added && st.tab !== 'ai') toast('AI 提出了新建议，见右侧“AI 建议”');
+  });
+  api.getSuggestions().then(setSuggestions, () => {});
   // Scans started over MCP show the same progress overlay.
   onEvent<string>('scan-start', (path) => {
     if (!$('#scanOverlay').classList.contains('hidden')) return;
@@ -987,8 +1081,8 @@ function bindUi() {
 
   document.addEventListener('keydown', (e) => {
     if ((e.target as HTMLElement).tagName === 'SELECT') return;
-    if (!$('#delModal').classList.contains('hidden')) {
-      if (e.key === 'Escape') answerDelete([]);
+    if (confirm.cur) {
+      if (e.key === 'Escape') answerConfirm([]);
       return;
     }
     if (e.key === 'Escape') {
@@ -1015,7 +1109,7 @@ function bindUi() {
 
 async function init() {
   bindUi();
-  bindDelete();
+  bindMcp();
   onProgress(onScanProgress);
   onDone(async (d) => {
     await onScanDone(d);

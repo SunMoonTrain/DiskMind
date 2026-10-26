@@ -4,7 +4,7 @@
 
 use crate::commands::{self, AppState};
 use crate::report::{self, fmt_size};
-use crate::sys;
+use crate::{cleanup, sys};
 use crate::tree::Tree;
 use serde_json::{json, Value};
 use std::collections::HashSet;
@@ -21,14 +21,18 @@ const SCAN_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 const MAX_DELETE: usize = 200;
 
 /// One confirmation dialog at a time.
-static DELETE_LOCK: Mutex<()> = Mutex::new(());
+static CONFIRM_LOCK: Mutex<()> = Mutex::new(());
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
 const INSTRUCTIONS: &str = "DiskMind is a disk space analyzer running on the user's Windows PC. \
 Tools work on the scan currently loaded in its window; call `status` first and `scan` if nothing is loaded. \
 Explore with `list_dir`, `top_files`, `extensions`, `changes` or `report`, explain what is safe to remove, \
 then call `recycle` with the exact paths. The user confirms every deletion in the DiskMind window and can untick items; \
-approved items go to the Recycle Bin (space is freed once it is emptied). Write `reason` in the user's language. \
+approved items go to the Recycle Bin (space is freed once it is emptied). \
+For caches and system leftovers, `list_cleanups` shows built-in actions (temp files, Windows update cache, component store, \
+hibernation, package-manager caches, Recycle Bin) and `cleanup` runs one after the user confirms; DiskMind runs nothing else. \
+Any other advice (moving a game library, changing an app's storage folder, uninstalling something, a command to run yourself) \
+goes to `suggest`, which shows it in the window for the user to act on. Write `reason` and suggestions in the user's language. \
 Never propose deleting personal documents, photos, projects or anything you are unsure about.";
 
 pub fn start(app: AppHandle) {
@@ -201,6 +205,40 @@ fn tool_defs() -> Value {
             "annotations": ro,
         },
         {
+            "name": "list_cleanups",
+            "description": "Built-in cleanup actions that apply to this PC, with the exact command each runs, whether it needs administrator rights, and the expected space freed when it can be measured.",
+            "inputSchema": { "type": "object", "properties": {} },
+            "annotations": ro,
+        },
+        {
+            "name": "cleanup",
+            "description": "Ask the user to run one built-in cleanup action from `list_cleanups`. DiskMind shows a confirmation dialog with the command and your reason; actions marked admin also trigger a UAC prompt. Blocks until the user answers and the action finishes, then reports the free space gained. Arbitrary commands are not possible; use `suggest` for those.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "action": { "type": "string", "description": "An id from list_cleanups." },
+                    "reason": { "type": "string", "description": "Why this helps, shown to the user. Use the user's language." },
+                },
+                "required": ["action", "reason"],
+            },
+            "annotations": { "destructiveHint": true },
+        },
+        {
+            "name": "suggest",
+            "description": "Show a recommendation the user carries out themselves in DiskMind's \"AI 建议\" tab, e.g. moving a game library to another drive, changing an app's cache folder, uninstalling a program, or a command for them to run. DiskMind never executes it. Returns immediately.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "title": { "type": "string", "description": "Short headline." },
+                    "detail": { "type": "string", "description": "What to do and why, step by step if needed." },
+                    "savings": { "type": "string", "description": "Expected space gained, e.g. \"约 40 GB\"." },
+                    "command": { "type": "string", "description": "Optional command the user can copy." },
+                    "path": { "type": "string", "description": "Optional folder or file the user can open in Explorer." },
+                },
+                "required": ["title", "detail"],
+            },
+        },
+        {
             "name": "recycle",
             "description": "Ask the user to move files or folders to the Recycle Bin. DiskMind shows a confirmation dialog listing every path with its size and your reason; the user can untick items or decline. Blocks until they answer (up to 10 minutes). System folders, Program Files, drive roots and profile folders are refused.",
             "inputSchema": {
@@ -326,6 +364,24 @@ fn call_tool(app: &AppHandle, name: &str, a: &Value) -> Result<String, String> {
             })
         }
         "recycle" => recycle(app, a),
+        "list_cleanups" => {
+            let rows: Vec<Value> = cleanup::available()
+                .iter()
+                .map(|c| {
+                    json!({
+                        "action": c.id,
+                        "title": c.title,
+                        "what": c.desc,
+                        "command": c.command,
+                        "admin": c.admin,
+                        "estimate": c.estimate.map(fmt_size),
+                    })
+                })
+                .collect();
+            Ok(pretty(json!(rows)))
+        }
+        "cleanup" => run_cleanup(app, a),
+        "suggest" => suggest(app, a),
         _ => Err(format!("unknown tool: {name}")),
     }
 }
@@ -453,7 +509,7 @@ fn recycle(app: &AppHandle, a: &Value) -> Result<String, String> {
     if raw.is_empty() || raw.len() > MAX_DELETE {
         return Err(format!("paths must hold 1 to {MAX_DELETE} entries"));
     }
-    let _one = DELETE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _one = CONFIRM_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let state = app.state::<AppState>();
 
     // Validate, drop duplicates and anything already covered by a listed parent folder.
@@ -494,23 +550,7 @@ fn recycle(app: &AppHandle, a: &Value) -> Result<String, String> {
         return Err(format!("Nothing to delete.\n{}", why.join("\n")));
     }
 
-    let id = NEXT_ID.fetch_add(1, SeqCst);
-    let (tx, rx) = mpsc::channel();
-    state.pending_deletes.lock().unwrap().insert(id, tx);
-    let _ = app.emit("mcp-delete-request", json!({ "id": id, "reason": reason, "items": items }));
-    if let Some(w) = app.get_webview_window("main") {
-        let _ = w.unminimize();
-        let _ = w.show();
-        let _ = w.set_focus();
-    }
-    let approved = match rx.recv_timeout(CONFIRM_TIMEOUT) {
-        Ok(v) => v,
-        Err(_) => {
-            state.pending_deletes.lock().unwrap().remove(&id);
-            let _ = app.emit("mcp-delete-cancel", id);
-            return Err("The user did not answer within 10 minutes; nothing was deleted.".into());
-        }
-    };
+    let approved = ask_user(app, "mcp-delete-request", json!({ "reason": reason, "items": items }))?;
     // Only paths that were validated and shown may be deleted, whatever the UI sends back.
     let approved: HashSet<String> = approved.iter().map(|p| p.to_lowercase()).collect();
     if approved.is_empty() {
@@ -553,4 +593,75 @@ fn recycle(app: &AppHandle, a: &Value) -> Result<String, String> {
         "rejected": rejected.iter().map(|(p, e)| json!({ "path": p, "error": e })).collect::<Vec<_>>(),
         "note": "Items are in the Recycle Bin; the space is freed once it is emptied.",
     })))
+}
+
+/// Shows a confirmation in the GUI and waits for the answer (empty = declined).
+fn ask_user(app: &AppHandle, event: &str, mut payload: Value) -> Result<Vec<String>, String> {
+    let state = app.state::<AppState>();
+    let id = NEXT_ID.fetch_add(1, SeqCst);
+    payload["id"] = json!(id);
+    let (tx, rx) = mpsc::channel();
+    state.pending_deletes.lock().unwrap().insert(id, tx);
+    let _ = app.emit(event, payload);
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.unminimize();
+        let _ = w.show();
+        let _ = w.set_focus();
+    }
+    rx.recv_timeout(CONFIRM_TIMEOUT).map_err(|_| {
+        state.pending_deletes.lock().unwrap().remove(&id);
+        let _ = app.emit("mcp-confirm-cancel", id);
+        "The user did not answer within 10 minutes; nothing was done.".to_string()
+    })
+}
+
+fn run_cleanup(app: &AppHandle, a: &Value) -> Result<String, String> {
+    let id = arg_str(a, "action").ok_or("action is required")?;
+    let reason = arg_str(a, "reason").ok_or("reason is required")?.trim().to_string();
+    let act = cleanup::find(id).ok_or_else(|| format!("unknown action {id}; see list_cleanups"))?;
+    let _one = CONFIRM_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let info = cleanup::available().into_iter().find(|c| c.id == id).ok_or_else(|| format!("{id} does not apply to this PC"))?;
+    let answer = ask_user(app, "mcp-cleanup-request", json!({ "reason": reason, "action": info, "elevated": sys::is_admin() }))?;
+    if answer.is_empty() {
+        return Ok("The user declined; nothing was run.".into());
+    }
+    let _ = app.emit("mcp-cleanup-started", act.title);
+    let r = cleanup::run(id);
+    let _ = app.emit(
+        "mcp-cleanup-done",
+        match &r {
+            Ok(o) => json!({ "title": act.title, "ok": true, "freed": o.freed }),
+            Err(e) => json!({ "title": act.title, "ok": false, "error": e }),
+        },
+    );
+    let o = r?;
+    Ok(pretty(json!({
+        "action": id,
+        "freeSpaceGained": fmt_size(o.freed),
+        "output": o.detail,
+        "note": "The loaded scan does not reflect this until the user rescans (F5).",
+    })))
+}
+
+fn suggest(app: &AppHandle, a: &Value) -> Result<String, String> {
+    let title = arg_str(a, "title").ok_or("title is required")?;
+    let detail = arg_str(a, "detail").ok_or("detail is required")?;
+    let opt = |k: &str| arg_str(a, k).map(|s| s.trim().to_string());
+    let state = app.state::<AppState>();
+    let list = {
+        let mut v = state.suggestions.lock().unwrap();
+        v.push(commands::Suggestion {
+            id: NEXT_ID.fetch_add(1, SeqCst),
+            title: title.trim().into(),
+            detail: detail.trim().into(),
+            savings: opt("savings"),
+            command: opt("command"),
+            path: opt("path"),
+        });
+        let extra = v.len().saturating_sub(50);
+        v.drain(..extra);
+        v.clone()
+    };
+    let _ = app.emit("suggestions-changed", list);
+    Ok("Shown to the user in DiskMind's \"AI 建议\" tab. DiskMind does not run it; the user decides.".into())
 }

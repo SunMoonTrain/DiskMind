@@ -87,6 +87,7 @@
             <button data-t="files">大文件</button>
             <button data-t="types">类型</button>
             <button data-t="history">历史</button>
+            <button data-t="ai">AI 建议<i id="aiBadge" class="badge hidden"></i></button>
           </div>
           <div id="tabBody" class="tab-body"></div>
         </aside>
@@ -162,6 +163,24 @@
           <span id="delStats" class="ex-stats"></span>
           <button id="delNo" class="btn sm">全部拒绝</button>
           <button id="delYes" class="btn sm danger">移到回收站</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="runModal" class="modal hidden">
+      <div class="modal-card del-card">
+        <div class="modal-head">
+          <div>
+            <h3>AI 请求运行清理</h3>
+            <p>DiskMind 只会运行下面这一项内置清理操作，不会执行其他命令。</p>
+          </div>
+        </div>
+        <div id="runReason" class="del-reason"></div>
+        <div id="runAction" class="run-action"></div>
+        <div class="modal-foot">
+          <span class="ex-stats"></span>
+          <button id="runNo" class="btn sm">拒绝</button>
+          <button id="runYes" class="btn sm danger">运行</button>
         </div>
       </div>
     </div>

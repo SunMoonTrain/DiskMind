@@ -8,7 +8,7 @@
 //! - `<out>.cancel`    created by the parent to request cancellation
 //! - `<out>.err`       error message, written by the child on failure
 
-use crate::mft;
+use crate::{cleanup, mft};
 use crate::progress::Counters;
 use crate::tree::RawTree;
 use std::fs;
@@ -16,11 +16,12 @@ use std::io::{BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 use std::time::Duration;
-use windows_sys::Win32::Foundation::CloseHandle;
+use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
 use windows_sys::Win32::System::Threading::{GetExitCodeProcess, WaitForSingleObject};
 use windows_sys::Win32::UI::Shell::{ShellExecuteExW, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW};
 
 pub const FLAG: &str = "--mft-helper";
+pub const CLEANUP_FLAG: &str = "--cleanup-helper";
 const WAIT_OBJECT_0: u32 = 0;
 const WAIT_TIMEOUT: u32 = 258;
 const ERROR_CANCELLED: i32 = 1223;
@@ -76,16 +77,12 @@ pub fn helper_main(letter: &str, out: &str) -> i32 {
     }
 }
 
-/// Parent side: launch the helper with a UAC prompt, mirror its progress into `c`,
-/// and load the resulting tree.
-pub fn run_elevated(letter: char, c: &Counters, cancel: &AtomicBool) -> Result<RawTree, String> {
-    let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
-    let out = std::env::temp_dir().join(format!("diskmind-mft-{}-{nonce}.bin", std::process::id()));
+/// Starts this exe elevated (one UAC prompt) with `args`; returns the process handle.
+fn launch(args: &str, what: &str) -> Result<HANDLE, String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let verb = wide("runas");
     let file = wide(&exe.to_string_lossy());
-    let params = wide(&format!("{FLAG} {letter} \"{}\"", out.display()));
-
+    let params = wide(args);
     let mut info: SHELLEXECUTEINFOW = unsafe { std::mem::zeroed() };
     info.cbSize = std::mem::size_of::<SHELLEXECUTEINFOW>() as u32;
     info.fMask = SEE_MASK_NOCLOSEPROCESS;
@@ -95,16 +92,24 @@ pub fn run_elevated(letter: char, c: &Counters, cancel: &AtomicBool) -> Result<R
     info.nShow = 0; // SW_HIDE
     if unsafe { ShellExecuteExW(&mut info) } == 0 {
         let e = std::io::Error::last_os_error();
-        return Err(if e.raw_os_error() == Some(ERROR_CANCELLED) {
-            DENIED.into()
-        } else {
-            format!("无法启动 MFT 扫描进程: {e}")
-        });
+        return Err(if e.raw_os_error() == Some(ERROR_CANCELLED) { DENIED.into() } else { format!("无法启动{what}: {e}") });
     }
-    let h = info.hProcess;
-    if h.is_null() {
-        return Err("无法启动 MFT 扫描进程".into());
+    if info.hProcess.is_null() {
+        return Err(format!("无法启动{what}"));
     }
+    Ok(info.hProcess)
+}
+
+fn temp_out(kind: &str) -> PathBuf {
+    let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
+    std::env::temp_dir().join(format!("diskmind-{kind}-{}-{nonce}.bin", std::process::id()))
+}
+
+/// Parent side: launch the helper with a UAC prompt, mirror its progress into `c`,
+/// and load the resulting tree.
+pub fn run_elevated(letter: char, c: &Counters, cancel: &AtomicBool) -> Result<RawTree, String> {
+    let out = temp_out("mft");
+    let h = launch(&format!("{FLAG} {letter} \"{}\"", out.display()), " MFT 扫描进程")?;
 
     let pf = side(&out, ".progress");
     let mut cancel_sent = false;
@@ -147,6 +152,42 @@ pub fn run_elevated(letter: char, c: &Counters, cancel: &AtomicBool) -> Result<R
         Err(fs::read_to_string(side(&out, ".err")).unwrap_or_else(|_| format!("MFT 扫描进程退出码 {code}")))
     };
     for ext in ["", ".progress", ".cancel", ".err"] {
+        let _ = fs::remove_file(side(&out, ext));
+    }
+    res
+}
+
+/// Child entry point: `diskmind.exe --cleanup-helper <action> <out>`; writes the outcome as JSON.
+pub fn cleanup_helper_main(id: &str, out: &str) -> i32 {
+    let out = Path::new(out);
+    match cleanup::run_here(id) {
+        Ok(o) => {
+            let _ = fs::write(out, serde_json::to_vec(&o).unwrap_or_default());
+            0
+        }
+        Err(e) => {
+            let _ = fs::write(side(out, ".err"), e);
+            1
+        }
+    }
+}
+
+/// Runs a built-in cleanup action in an elevated child and waits for it.
+pub fn run_cleanup(id: &str) -> Result<cleanup::Outcome, String> {
+    let out = temp_out("cleanup");
+    let h = launch(&format!("{CLEANUP_FLAG} {id} \"{}\"", out.display()), "清理进程")?;
+    let mut code = 1u32;
+    unsafe {
+        WaitForSingleObject(h, u32::MAX);
+        GetExitCodeProcess(h, &mut code);
+        CloseHandle(h);
+    }
+    let res = if code == 0 {
+        fs::read(&out).map_err(|e| e.to_string()).and_then(|b| serde_json::from_slice(&b).map_err(|e| e.to_string()))
+    } else {
+        Err(fs::read_to_string(side(&out, ".err")).unwrap_or_else(|_| format!("清理进程退出码 {code}")))
+    };
+    for ext in ["", ".err"] {
         let _ = fs::remove_file(side(&out, ext));
     }
     res
