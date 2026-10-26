@@ -94,3 +94,28 @@ pub fn reveal(path: &str, select: bool) -> Result<(), String> {
     }
     cmd.spawn().map(|_| ()).map_err(|e| e.to_string())
 }
+
+/// Moves a file or folder to the Recycle Bin. When the volume has no Recycle Bin (or the
+/// item is too large for it) Windows itself asks before deleting permanently.
+pub fn recycle(path: &str) -> Result<(), String> {
+    use windows_sys::Win32::UI::Shell::{
+        SHFileOperationW, FOF_ALLOWUNDO, FOF_NOCONFIRMATION, FOF_NOERRORUI, FOF_SILENT, FOF_WANTNUKEWARNING,
+        FO_DELETE, SHFILEOPSTRUCTW,
+    };
+    // pFrom is a double-NUL-terminated list.
+    let from: Vec<u16> = path.encode_utf16().chain([0, 0]).collect();
+    let mut op: SHFILEOPSTRUCTW = unsafe { std::mem::zeroed() };
+    op.wFunc = FO_DELETE;
+    op.pFrom = from.as_ptr();
+    op.fFlags = (FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_NOERRORUI | FOF_SILENT | FOF_WANTNUKEWARNING) as _;
+    let r = unsafe { SHFileOperationW(&mut op) };
+    if op.fAnyOperationsAborted != 0 {
+        Err("已取消".into())
+    } else if r != 0 {
+        Err(format!("删除失败（错误码 0x{r:X}），可能有文件被占用"))
+    } else if std::fs::symlink_metadata(path).is_ok() {
+        Err("部分文件未能删除，可能被占用".into())
+    } else {
+        Ok(())
+    }
+}

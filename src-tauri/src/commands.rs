@@ -6,15 +6,35 @@ use crate::{elevate, mft, report, walker};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering::*};
+use std::collections::HashMap;
+use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager, State};
 
-#[derive(Default)]
 pub struct AppState {
     pub tree: Mutex<Option<Tree>>,
     pub cancel: Arc<AtomicBool>,
     pub scanning: Arc<AtomicBool>,
+    /// Result of the most recent scan, for MCP callers waiting on one.
+    pub last_done: Mutex<Option<ScanDone>>,
+    /// MCP delete requests waiting for the user's answer in the GUI, by request id.
+    pub pending_deletes: Mutex<HashMap<u64, Sender<Vec<String>>>>,
+    /// Address of the local MCP endpoint, or why it could not start.
+    pub mcp: Mutex<Result<String, String>>,
+}
+
+impl Default for AppState {
+    fn default() -> Self {
+        AppState {
+            tree: Mutex::default(),
+            cancel: Arc::default(),
+            scanning: Arc::default(),
+            last_done: Mutex::default(),
+            pending_deletes: Mutex::default(),
+            mcp: Mutex::new(Err("未启动".into())),
+        }
+    }
 }
 
 #[derive(Serialize, Clone)]
@@ -33,17 +53,17 @@ struct ProgressMsg {
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct ScanDone {
-    ok: bool,
-    error: Option<String>,
-    warning: Option<String>,
-    root: u32,
-    root_path: String,
-    mode: String,
-    elapsed_ms: u64,
-    files: u64,
-    dirs: u64,
-    total: u64,
-    baseline: Option<BaselineInfo>,
+    pub ok: bool,
+    pub error: Option<String>,
+    pub warning: Option<String>,
+    pub root: u32,
+    pub root_path: String,
+    pub mode: String,
+    pub elapsed_ms: u64,
+    pub files: u64,
+    pub dirs: u64,
+    pub total: u64,
+    pub baseline: Option<BaselineInfo>,
 }
 
 #[derive(Serialize)]
@@ -63,7 +83,7 @@ fn data_dir(app: &AppHandle) -> Option<PathBuf> {
     app.path().app_data_dir().ok()
 }
 
-fn normalize(p: &str) -> Res<String> {
+pub fn normalize(p: &str) -> Res<String> {
     let mut s = p.trim().replace('/', "\\");
     if s.len() == 2 && s.ends_with(':') {
         s.push('\\');
@@ -111,11 +131,17 @@ pub fn is_admin() -> bool {
 
 #[tauri::command]
 pub fn start_scan(app: AppHandle, state: State<'_, AppState>, path: String, use_mft: bool) -> Res<()> {
-    let root = normalize(&path)?;
+    begin_scan(&app, &state, &path, use_mft)
+}
+
+/// Starts a background scan; shared by the UI and the MCP `scan` tool.
+pub fn begin_scan(app: &AppHandle, state: &AppState, path: &str, use_mft: bool) -> Res<()> {
+    let root = normalize(path)?;
     if state.scanning.swap(true, SeqCst) {
         return Err("正在扫描中".into());
     }
     state.cancel.store(false, SeqCst);
+    let _ = app.emit("scan-start", &root);
     let app2 = app.clone();
     std::thread::Builder::new()
         .name("scan".into())
@@ -162,6 +188,7 @@ fn run_scan(app: AppHandle, root: String, use_mft: bool) {
     }
     let done = scan_inner(&app, &state, &root, use_mft, &c, t0);
     stop.store(true, Relaxed);
+    *state.last_done.lock().unwrap() = Some(done.clone());
     state.scanning.store(false, SeqCst);
     let _ = app.emit("scan-done", done);
 }
@@ -353,4 +380,17 @@ pub async fn write_text_file(path: String, content: String) -> Res<()> {
 #[tauri::command]
 pub fn reveal_path(path: String, select: bool) -> Res<()> {
     sys::reveal(&path, select)
+}
+
+#[tauri::command]
+pub fn mcp_url(state: State<'_, AppState>) -> Res<String> {
+    state.mcp.lock().map_err(|e| e.to_string())?.clone()
+}
+
+/// The user's answer to an MCP delete request: the paths they approved (empty = declined).
+#[tauri::command]
+pub fn resolve_delete(state: State<'_, AppState>, id: u64, paths: Vec<String>) {
+    if let Some(tx) = state.pending_deletes.lock().unwrap().remove(&id) {
+        let _ = tx.send(paths);
+    }
 }

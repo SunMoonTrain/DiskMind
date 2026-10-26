@@ -1,6 +1,6 @@
 import './style.css';
-import { api, onDone, onProgress } from './api';
-import type { Change, Changes, DriveInfo, Item, NodeInfo, Progress, ScanDone, SnapMeta } from './api';
+import { api, onDone, onEvent, onProgress } from './api';
+import type { Change, Changes, DeleteItem, DeleteRequest, DriveInfo, Item, NodeInfo, Progress, ScanDone, SnapMeta } from './api';
 import { ChartHost, ColorMode, ViewMode } from './chart';
 import { esc, extOf, fmtAgo, fmtDelta, fmtDuration, fmtNum, fmtPct, fmtShortTime, fmtSize, fmtTime } from './format';
 
@@ -737,6 +737,19 @@ function closeExport() {
 
 function bindExport() {
   $('#exportBtn').onclick = openExport;
+  api.mcpUrl().then(
+    (url) => {
+      const hint = $('#mcpHint');
+      hint.innerHTML = `也可以让 AI 直接分析和清理（删除前会在这里弹窗确认）：MCP 地址 <code>${esc(url)}</code><button class="link" id="mcpCopy">复制 Claude Code 添加命令</button>`;
+      hint.classList.remove('hidden');
+      $('#mcpCopy').onclick = () =>
+        navigator.clipboard.writeText(`claude mcp add --transport http diskmind ${url}`).then(
+          () => toast('已复制，在终端里运行即可'),
+          (e) => toast(`复制失败：${e}`, true),
+        );
+    },
+    () => {},
+  );
   $('#exClose').onclick = closeExport;
   $('#exportModal').onmousedown = (e) => {
     if (e.target === e.currentTarget) closeExport();
@@ -782,6 +795,116 @@ function bindExport() {
       toast(String(e), true);
     }
   };
+}
+
+// ------------------------------------------------------------------ AI cleanup (MCP)
+
+const del = { req: null as DeleteRequest | null, queue: [] as DeleteRequest[] };
+
+function openDelete(r: DeleteRequest) {
+  if (del.req) {
+    del.queue.push(r);
+    return;
+  }
+  del.req = r;
+  closeMenu();
+  closeExport();
+  $('#delReason').textContent = r.reason;
+  $('#delList').innerHTML = r.items
+    .map(
+      (it, i) => `
+      <div class="del-row${it.error ? ' bad' : ''}">
+        <input type="checkbox" data-i="${i}" ${it.error ? 'disabled' : 'checked'} />
+        <span class="ico">${it.dir ? ICON.dir : ICON.file}</span>
+        <span class="p">${esc(it.path)}</span>
+        ${
+          it.error
+            ? `<span class="err">${esc(it.error)}</span>`
+            : `<span class="s">${it.size == null ? '—' : fmtSize(it.size)}</span>
+               <button class="icon-btn" data-r="${i}" title="在资源管理器中显示">${ICON.explorer}</button>`
+        }
+      </div>`,
+    )
+    .join('');
+  renderDeleteStats();
+  $('#delModal').classList.remove('hidden');
+}
+
+function checkedDelete(): DeleteItem[] {
+  const r = del.req;
+  if (!r) return [];
+  return [...$('#delList').querySelectorAll<HTMLInputElement>('input:checked')].map((c) => r.items[Number(c.dataset.i)]);
+}
+
+function renderDeleteStats() {
+  if (!del.req) return;
+  const sel = checkedDelete();
+  const ok = del.req.items.filter((x) => !x.error).length;
+  const size = `${fmtSize(sel.reduce((s, x) => s + (x.size ?? 0), 0))}${sel.some((x) => x.size == null) ? '+' : ''}`;
+  $('#delStats').textContent = `已选 ${sel.length} / ${ok} 项`;
+  const yes = $<HTMLButtonElement>('#delYes');
+  yes.disabled = sel.length === 0;
+  yes.textContent = sel.length ? `移到回收站（${size}）` : '移到回收站';
+  const all = $<HTMLInputElement>('#delAll');
+  all.checked = sel.length === ok;
+  all.indeterminate = sel.length > 0 && sel.length < ok;
+}
+
+function answerDelete(paths: string[]) {
+  const r = del.req;
+  if (!r) return;
+  api.resolveDelete(r.id, paths).catch((e) => toast(String(e), true));
+  toast(paths.length ? `正在移到回收站：${paths.length} 项…` : '已拒绝 AI 的删除请求');
+  closeDelete();
+}
+
+function closeDelete() {
+  $('#delModal').classList.add('hidden');
+  del.req = null;
+  const next = del.queue.shift();
+  if (next) openDelete(next);
+}
+
+/** The backend pruned recycled items from the loaded tree; redraw without rescanning. */
+async function refreshAfterDelete(t: { total: number; files: number; dirs: number; freed: number } | null) {
+  if (!t || st.rootId < 0) return;
+  if (st.lastDone) Object.assign(st.lastDone, { total: t.total, files: t.files, dirs: t.dirs });
+  const alive = st.cur >= 0 && (await api.getInfo(st.cur).then(() => true, () => false));
+  await loadChanges();
+  await navigate(alive ? st.cur : st.rootId, null);
+  renderStatus();
+  renderTab();
+  toast(`已移到回收站：${fmtSize(t.freed)}，清空回收站后释放空间`);
+}
+
+function bindDelete() {
+  $('#delList').onchange = renderDeleteStats;
+  $('#delList').onclick = (e) => {
+    const b = (e.target as HTMLElement).closest<HTMLElement>('[data-r]');
+    if (b && del.req) api.revealPath(del.req.items[Number(b.dataset.r)].path, true).catch((err) => toast(String(err), true));
+  };
+  $<HTMLInputElement>('#delAll').onchange = (e) => {
+    const on = (e.target as HTMLInputElement).checked;
+    $('#delList').querySelectorAll<HTMLInputElement>('input:not(:disabled)').forEach((c) => (c.checked = on));
+    renderDeleteStats();
+  };
+  $('#delNo').onclick = () => answerDelete([]);
+  $('#delYes').onclick = () => answerDelete(checkedDelete().map((x) => x.path));
+  onEvent<DeleteRequest>('mcp-delete-request', openDelete);
+  onEvent<number>('mcp-delete-cancel', (id) => {
+    if (del.req?.id === id) {
+      closeDelete();
+      toast('AI 的删除请求已超时，未删除任何文件', true);
+    } else del.queue = del.queue.filter((r) => r.id !== id);
+  });
+  onEvent('tree-changed', refreshAfterDelete);
+  // Scans started over MCP show the same progress overlay.
+  onEvent<string>('scan-start', (path) => {
+    if (!$('#scanOverlay').classList.contains('hidden')) return;
+    closeMenu();
+    resetOverlay(path);
+    $('#scanOverlay').classList.remove('hidden');
+  });
 }
 
 // ------------------------------------------------------------------ wiring
@@ -864,6 +987,10 @@ function bindUi() {
 
   document.addEventListener('keydown', (e) => {
     if ((e.target as HTMLElement).tagName === 'SELECT') return;
+    if (!$('#delModal').classList.contains('hidden')) {
+      if (e.key === 'Escape') answerDelete([]);
+      return;
+    }
     if (e.key === 'Escape') {
       closeMenu();
       closeExport();
@@ -888,6 +1015,7 @@ function bindUi() {
 
 async function init() {
   bindUi();
+  bindDelete();
   onProgress(onScanProgress);
   onDone(async (d) => {
     await onScanDone(d);

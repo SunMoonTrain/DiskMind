@@ -10,6 +10,8 @@ A fast disk space analyzer (Rust + Tauri 2 / WebView2). It remembers every scan 
 - Large files, file-type breakdown, history trend, right-click to show in Explorer.
 - **Export for AI**: one click produces a Markdown report to paste into an AI chat: a pruned size tree (nodes ≥ 1 GB, or ≥ 5% of the parent and ≥ 100 MB), totals by extension, the 50 largest files, large items untouched for over a year, and growth since the baseline scan with a per-week rate. An optional anonymize mode replaces user names, account ids (WeChat / QQ / e-mail) and everything inside personal folders (Documents, Desktop, Downloads, …, OneDrive) with per-report random aliases.
 
+- **AI cleanup over MCP**: while the window is open, DiskMind serves an MCP endpoint at `http://127.0.0.1:47821/mcp` (Streamable HTTP, loopback only; override the port with `DISKMIND_MCP_PORT`). Tools: `status`, `scan`, `list_dir`, `top_files`, `extensions`, `changes`, `report` and `recycle`. `recycle` never deletes on its own: DiskMind shows a confirmation dialog with the AI's reason and every path with its size, the user can untick items, and approved items go to the Recycle Bin. The OS folder (except `Windows\Temp`), Program Files, drive roots, `$` system files and profile folders themselves are refused. The loaded scan is updated in place, so no rescan is needed. Add it to Claude Code with `claude mcp add --transport http diskmind http://127.0.0.1:47821/mcp`.
+
 ## Development
 
 ```bash
@@ -36,6 +38,7 @@ Snapshots are stored in `%APPDATA%\com.diskmind.desktop\history\`.
 | `src-tauri/src/walker.rs` | Parallel directory walk (skips reparse points) |
 | `src-tauri/src/tree.rs` | CSR tree, size aggregation, layout trimming, baseline matching and change detection |
 | `src-tauri/src/report.rs` | AI export report and path anonymization |
+| `src-tauri/src/mcp.rs` | Local MCP server, tools, and the GUI-confirmed recycle flow |
 | `src-tauri/src/history.rs` | Snapshot storage (bincode + gzip) |
 | `src/chart.ts` | Treemap / sunburst rendering, hit testing, zoom animation |
 | `src/main.ts` | UI controller |

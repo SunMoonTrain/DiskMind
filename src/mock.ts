@@ -157,4 +157,6 @@ export const mockApi = {
     return lines.join('\n');
   },
   writeTextFile: async () => {},
+  mcpUrl: async (): Promise<string> => { throw new Error('mock'); },
+  resolveDelete: async () => {},
 };

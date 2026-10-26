@@ -304,6 +304,69 @@ impl Tree {
         s
     }
 
+    /// Node at an absolute path (case-insensitive), if it is inside this scan.
+    pub fn find(&self, path: &str) -> Option<u32> {
+        let p = path.trim().replace('/', "\\");
+        let root = self.root_path.trim_end_matches('\\');
+        if p.len() < root.len() || !p.is_char_boundary(root.len()) || !p[..root.len()].eq_ignore_ascii_case(root) {
+            return None;
+        }
+        let rest = &p[root.len()..];
+        if !rest.is_empty() && !rest.starts_with('\\') {
+            return None;
+        }
+        let mut x = self.root;
+        for part in rest.split('\\').filter(|s| !s.is_empty()) {
+            x = *self.children(x).iter().find(|&&c| self.names[c as usize].eq_ignore_ascii_case(part))?;
+        }
+        Some(x)
+    }
+
+    /// Drop a deleted subtree: ancestors shrink, it leaves its parent's child list and
+    /// the BFS order, and sibling lists along the way are re-sorted.
+    pub fn remove(&mut self, id: u32) {
+        if id == self.root || !self.valid(id) {
+            return;
+        }
+        let i = id as usize;
+        let (size, files) = (self.size[i], self.files[i]);
+        let p = self.parent[i];
+        // Detach every node in the subtree so `valid` rejects stale ids still held by the UI.
+        let mut gone = vec![false; self.names.len()];
+        let mut dirs = 0u64;
+        let mut stack = vec![id];
+        while let Some(x) = stack.pop() {
+            gone[x as usize] = true;
+            dirs += self.is_dir[x as usize] as u64;
+            self.parent[x as usize] = NONE;
+            stack.extend_from_slice(self.children(x));
+        }
+        let (s, e) = (self.child_start[p as usize] as usize, self.child_start[p as usize + 1] as usize);
+        if let Some(k) = self.child_list[s..e].iter().position(|&c| c == id) {
+            self.child_list.remove(s + k);
+            for v in &mut self.child_start[p as usize + 1..] {
+                *v -= 1;
+            }
+        }
+        self.order.retain(|&x| !gone[x as usize]);
+        self.file_count -= files as u64;
+        self.dir_count -= dirs;
+        let mut a = p;
+        while a != NONE {
+            let ai = a as usize;
+            self.size[ai] -= size;
+            self.files[ai] -= files;
+            if a == self.root {
+                break;
+            }
+            let gp = self.parent[ai] as usize;
+            let (s, e) = (self.child_start[gp] as usize, self.child_start[gp + 1] as usize);
+            let sz = &self.size;
+            self.child_list[s..e].sort_unstable_by(|a, b| sz[*b as usize].cmp(&sz[*a as usize]));
+            a = self.parent[ai];
+        }
+    }
+
     pub fn info(&self, id: u32) -> Option<NodeInfo> {
         if !self.valid(id) {
             return None;
@@ -672,6 +735,34 @@ mod tests {
         let t = sample(10, true, 30);
         assert_eq!(t.size[t.root as usize], 65 * MB);
         assert_eq!(t.files[t.root as usize], 4);
+        let names: Vec<_> = t.children(t.root).iter().map(|&c| &*t.names[c as usize]).collect();
+        assert_eq!(names, ["big.iso", "B", "A"]);
+    }
+
+    #[test]
+    fn find_and_remove() {
+        let mut t = sample(10, true, 30);
+        assert_eq!(t.find("x:\\"), Some(t.root));
+        let a = t.find("X:\\a").unwrap();
+        assert_eq!(t.find("X:\\A\\A2"), t.find("x:/a/a2"));
+        assert_eq!(t.find("X:\\Ab"), None);
+        assert_eq!(t.find("Y:\\A"), None);
+
+        let b = t.find("X:\\B").unwrap();
+        t.remove(b);
+        assert_eq!(t.size[t.root as usize], 45 * MB);
+        assert_eq!(t.files[t.root as usize], 3);
+        assert_eq!((t.file_count, t.dir_count), (3, 2));
+        assert_eq!(t.find("X:\\B"), None);
+        assert!(t.top_files(t.root, 10).iter().all(|f| f.name != "b1"));
+        assert!(t.info(b).is_none() && t.info(b + 1).is_none(), "removed nodes must be invalid");
+
+        t.remove(t.find("X:\\A\\a2").unwrap());
+        assert_eq!(t.size[a as usize], 10 * MB);
+
+        // Shrinking A below its siblings re-sorts the root's children.
+        let mut t = sample(40, true, 30);
+        t.remove(t.find("X:\\A\\a1").unwrap());
         let names: Vec<_> = t.children(t.root).iter().map(|&c| &*t.names[c as usize]).collect();
         assert_eq!(names, ["big.iso", "B", "A"]);
     }

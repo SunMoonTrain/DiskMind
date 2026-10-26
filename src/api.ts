@@ -99,6 +99,18 @@ export interface ScanDone {
   baseline: Baseline | null;
 }
 
+export interface DeleteItem {
+  path: string;
+  dir: boolean;
+  size: number | null;
+  files: number | null;
+  /** Why the backend refused this path; such items cannot be approved. */
+  error: string | null;
+}
+
+/** An MCP client asking to recycle files; answered with `resolveDelete`. */
+export interface DeleteRequest { id: number; reason: string; items: DeleteItem[] }
+
 const realApi = {
   listDrives: () => invoke<DriveInfo[]>('list_drives'),
   isAdmin: () => invoke<boolean>('is_admin'),
@@ -116,6 +128,8 @@ const realApi = {
   revealPath: (path: string, select: boolean) => invoke<void>('reveal_path', { path, select }),
   exportReport: (opts: { scope: number; anonymize: boolean; tzOffsetMin: number }) => invoke<string>('export_report', { opts }),
   writeTextFile: (path: string, content: string) => invoke<void>('write_text_file', { path, content }),
+  mcpUrl: () => invoke<string>('mcp_url'),
+  resolveDelete: (id: number, paths: string[]) => invoke<void>('resolve_delete', { id, paths }),
 };
 
 // Outside Tauri (plain browser via `npm run dev`) fall back to a fake backend for UI work.
@@ -127,3 +141,7 @@ export const onProgress = (f: (p: Progress) => void): Promise<UnlistenFn> =>
   mock ? mock.mockListen('scan-progress', f) : listen<Progress>('scan-progress', (e) => f(e.payload));
 export const onDone = (f: (d: ScanDone) => void): Promise<UnlistenFn> =>
   mock ? mock.mockListen('scan-done', f) : listen<ScanDone>('scan-done', (e) => f(e.payload));
+
+/** Backend events with no mock counterpart; inert outside Tauri. */
+export const onEvent = <T>(name: string, f: (p: T) => void): Promise<UnlistenFn> =>
+  mock ? Promise.resolve(() => {}) : listen<T>(name, (e) => f(e.payload));

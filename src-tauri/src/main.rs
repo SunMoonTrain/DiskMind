@@ -3,6 +3,7 @@
 mod commands;
 mod elevate;
 mod history;
+mod mcp;
 mod mft;
 mod progress;
 mod report;
@@ -24,6 +25,10 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(commands::AppState::default())
+        .setup(|app| {
+            mcp::start(app.handle().clone());
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             commands::list_drives,
             commands::is_admin,
@@ -41,6 +46,8 @@ fn main() {
             commands::reveal_path,
             commands::export_report,
             commands::write_text_file,
+            commands::mcp_url,
+            commands::resolve_delete,
         ])
         .run(tauri::generate_context!())
         .expect("error while running DiskMind");
