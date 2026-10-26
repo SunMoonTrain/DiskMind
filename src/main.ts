@@ -264,10 +264,28 @@ async function onScanDone(d: ScanDone) {
   await Promise.all([loadChanges(), loadHistory()]);
   await navigate(d.root, null);
   renderStatus();
+  refreshDisk();
   if (d.baseline && st.changes) {
     const td = st.changes.totalDelta ?? 0;
     toast(`与 ${fmtAgo(d.baseline.time)} 的扫描相比：${fmtDelta(td)}`);
   }
+}
+
+/** Free space of the drive holding the scan; it changes with cleanups, so re-read it often. */
+async function refreshDisk() {
+  const el = $('#disk');
+  const letter = st.rootPath.slice(0, 3).toUpperCase();
+  const d = st.rootPath ? (await api.listDrives().catch(() => [] as DriveInfo[])).find((x) => x.root.toUpperCase() === letter) : null;
+  if (!d || !d.total) {
+    el.classList.add('hidden');
+    return;
+  }
+  const used = (d.total - d.free) / d.total;
+  el.classList.toggle('hot', used > 0.9);
+  el.innerHTML = `
+    <div class="row1"><span>${esc(d.root.slice(0, 2))} 可用</span><b>${fmtSize(d.free)}</b><span class="sp"></span><span>共 ${fmtSize(d.total)} · 已用 ${fmtPct(used)}</span></div>
+    <div class="bar"><i style="width:${(used * 100).toFixed(1)}%"></i></div>`;
+  el.classList.remove('hidden');
 }
 
 // ------------------------------------------------------------------ navigation
@@ -907,6 +925,7 @@ async function refreshAfterDelete(t: { total: number; files: number; dirs: numbe
   await navigate(alive ? st.cur : st.rootId, null);
   renderStatus();
   renderTab();
+  refreshDisk();
   toast(`已移到回收站：${fmtSize(t.freed)}，清空回收站后释放空间`);
 }
 
@@ -981,11 +1000,14 @@ function bindMcp() {
   });
   onEvent('tree-changed', refreshAfterDelete);
   onEvent<string>('mcp-cleanup-started', (title) => toast(`正在运行：${title}…`, false, 0));
-  onEvent<{ title: string; ok: boolean; freed?: number; error?: string }>('mcp-cleanup-done', (d) =>
-    d.ok
+  onEvent<{ title: string; ok: boolean; freed?: number; error?: string }>('mcp-cleanup-done', (d) => {
+    refreshDisk();
+    return d.ok
       ? toast(`${d.title}完成，可用空间增加 ${fmtSize(d.freed ?? 0)}${st.rootId >= 0 ? '，按 F5 重新扫描查看变化' : ''}`, false, 6000)
-      : toast(`${d.title}失败：${d.error}`, true),
-  );
+      : toast(`${d.title}失败：${d.error}`, true);
+  });
+  // Files may be deleted outside DiskMind; re-read free space when the user comes back.
+  window.addEventListener('focus', refreshDisk);
   onEvent<Suggestion[]>('suggestions-changed', (list) => {
     const added = list.length > st.suggestions.length;
     setSuggestions(list);
