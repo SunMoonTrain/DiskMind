@@ -33,6 +33,10 @@ lto = true
 codegen-units = 1
 strip = true
 
+# 自己的代码只保留行号表（.pdb 小很多）：panic/堆栈仍有文件和行号，调试器里看不到局部变量
+[profile.dev]
+debug = "line-tables-only"
+
 [profile.dev.package."*"]
 opt-level = 2
 # 依赖库不生成调试信息，大幅缩小 target
